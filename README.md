@@ -1,8 +1,10 @@
-# Cerebro de Agentes
+# Cerebro de Agentes — MultiAgent-brain
+
+> **Repo:** https://github.com/samuelherrerag1-lab/MultiAgent-brain
 
 Orquestador multi-agente **Líder → Pro Agents** (Qwen + DeepSeek Harness + Opencode) con contratos Zod, aislamiento `git worktree`, gate de calidad y memoria `pgvector`.
 
-> Ruta: `C:\Users\USUARIO\Documents\Samuel\Cerebro de Agentes` · Monorepo `pnpm + Turborepo` · Runtime `Node 22 LTS`
+> Ruta local: `C:\Users\USUARIO\Documents\Samuel\Cerebro de Agentes` · Monorepo `pnpm + Turborepo` · Runtime `Node 22 LTS`
 
 ## Quickstart
 
