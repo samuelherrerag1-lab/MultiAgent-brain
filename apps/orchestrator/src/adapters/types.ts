@@ -25,3 +25,10 @@ export interface AdapterOptions {
   /** Timeout por defecto (ms) */
   defaultTimeoutMs?: number;
 }
+
+/** Función spawn inyectable para tests */
+export type SpawnFn = (
+  command: string,
+  args: string[],
+  opts: { cwd: string; timeoutMs: number; signal?: AbortSignal },
+) => Promise<{ stdout: string; stderr: string; exitCode: number }>;

@@ -27,7 +27,7 @@ export const defaultSpawn: SpawnFn = async (command, args, opts) =>
       cwd: opts.cwd,
       stdio: ["ignore", "pipe", "pipe"],
       signal: opts.signal,
-      shell: false,
+      shell: process.platform === "win32",
     });
 
     let stdout = "";
