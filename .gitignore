@@ -1,0 +1,51 @@
+# Deps
+node_modules/
+.pnp/
+.pnp.js
+
+# Build
+dist/
+build/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+
+# Env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# DB
+*.db
+*.sqlite
+pgdata/
+
+# Playwright / Qwen Bridge
+playwright/.cache/
+playwright-report/
+test-results/
+qwen-profile/
+.cerebro-qwen/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Worktrees (generados por orquestador)
+.cerebro-worktrees/
+
+# Bun (si se usa opcional)
+bun.lockb

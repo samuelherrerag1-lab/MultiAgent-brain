@@ -1,0 +1,33 @@
+{
+  "name": "cerebro-de-agentes",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Orquestador multi-agente: Líder + Qwen + DSH + Opencode",
+  "packageManager": "pnpm@11.24.0",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0",
+    "pnpm": ">=11.0.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "db:generate": "turbo run db:generate --filter=@cerebro/db",
+    "db:migrate": "turbo run db:migrate --filter=@cerebro/db",
+    "db:studio": "turbo run db:studio --filter=@cerebro/db",
+    "clean": "turbo run clean && rimraf node_modules/.cache .turbo",
+    "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\""
+  },
+  "devDependencies": {
+    "turbo": "^2.5.0",
+    "typescript": "^6.0.3",
+    "prettier": "^3.5.0",
+    "rimraf": "^6.0.1"
+  }
+}

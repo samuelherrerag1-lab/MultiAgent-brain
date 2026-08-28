@@ -1,0 +1,16 @@
+packages:
+  - apps/*
+  - packages/*
+
+# Requerido en pnpm 10+ para paquetes con lifecycle scripts
+allowBuilds:
+  esbuild: true
+  sharp: true
+  unrs-resolver: true
+
+# Dedup y resolución local
+linkWorkspacePackages: true
+preferWorkspacePackages: true
+
+# Para evitar capturar el workspace raíz C:\Users\USUARIO\Documents\Samuel
+# Este archivo aísla el monorepo "Cerebro de Agentes"

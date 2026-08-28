@@ -1,0 +1,14 @@
+{
+  "extends": "./tooling/tsconfig/base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@cerebro/shared": ["packages/shared/src/index.ts"],
+      "@cerebro/shared/*": ["packages/shared/src/*"]
+    }
+  },
+  "references": [
+    { "path": "./packages/shared" }
+  ],
+  "files": []
+}
