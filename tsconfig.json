@@ -7,8 +7,5 @@
       "@cerebro/shared/*": ["packages/shared/src/*"]
     }
   },
-  "references": [
-    { "path": "./packages/shared" }
-  ],
   "files": []
 }

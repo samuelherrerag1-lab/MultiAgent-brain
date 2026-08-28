@@ -1,0 +1,38 @@
+{
+  "name": "@cerebro/orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config ../../vitest.config.ts",
+    "lint": "tsc --noEmit",
+    "clean": "rimraf dist",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "db:studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "@cerebro/shared": "workspace:*",
+    "@electric-sql/pglite": "^0.2.15",
+    "@hono/node-server": "^1.14.0",
+    "@hono/zod-validator": "^0.9.0",
+    "dotenv": "^16.5.0",
+    "drizzle-orm": "^0.38.0",
+    "hono": "^4.7.0",
+    "pg": "^8.13.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.0",
+    "drizzle-kit": "^0.30.0",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.19.0",
+    "typescript": "^6.0.3",
+    "vitest": "^3.0.0"
+  }
+}

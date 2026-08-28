@@ -17,7 +17,8 @@
     "dev": "turbo run dev",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
-    "test": "turbo run test",
+    "test": "vitest run",
+    "test:turbo": "turbo run test",
     "db:generate": "turbo run db:generate --filter=@cerebro/db",
     "db:migrate": "turbo run db:migrate --filter=@cerebro/db",
     "db:studio": "turbo run db:studio --filter=@cerebro/db",
@@ -25,9 +26,10 @@
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\""
   },
   "devDependencies": {
+    "prettier": "^3.5.0",
+    "rimraf": "^6.0.1",
     "turbo": "^2.5.0",
     "typescript": "^6.0.3",
-    "prettier": "^3.5.0",
-    "rimraf": "^6.0.1"
+    "vitest": "3.0.0"
   }
 }
