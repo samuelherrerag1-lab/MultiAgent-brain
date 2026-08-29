@@ -6,26 +6,38 @@ Orquestador multi-agente **Líder → Pro Agents** (Qwen + DeepSeek Harness + Op
 
 > Ruta local: `C:\Users\USUARIO\Documents\Samuel\Cerebro de Agentes` · Monorepo `pnpm + Turborepo` · Runtime `Node 22 LTS`
 
-## Quickstart
+## Quickstart — Un click
 
 ```ps
+# Opción A — Ejecutable (recomendado): levanta todo correctamente
+.\iniciar.bat        # CMD — abre 2 ventanas (Orquestador 3001 + Web 3000)
+.\iniciar.ps1        # PowerShell — más robusto, con checks
+# Hace: checks Node/pnpm/Git/Playwright, pnpm install, playwright install, .env, Qwen profile, DB (docker/pglite), y abre http://localhost:3000
+
+# Opción B — Manual
 # 1. Instalar deps (desde esta carpeta, con comillas por el espacio)
 pnpm install
 
 # 2. Configurar env
 Copy-Item .env.example .env
-# edita DATABASE_URL (Neon remoto o local), QWEN_TOKEN_PLAN_API_KEY, etc.
+# edita DATABASE_URL (vacío = pglite, cero config), QWEN_USER_DATA_DIR, OPENCODE_API_KEY, etc. Ver docs/setup.md
 
-# 3. DB (sin Docker: usa Neon + pglite)
+# 3. Qwen Chat — sesión persistente QwenMax-3.8 (una vez)
+pnpm --filter @cerebro/orchestrator exec tsx scripts/setup-qwen-profile.ts -- --headful
+# → Loguéate con GitHub, selecciona QwenMax-3.8, envía "hola", cierra
+
+# 4. DB (sin Docker: pglite auto, cero config. Con PG real:)
 psql $env:DATABASE_URL -c "CREATE EXTENSION IF NOT EXISTS vector;"
-pnpm --filter orchestrator db:generate
-pnpm --filter orchestrator db:migrate
+pnpm --filter @cerebro/orchestrator db:generate
+pnpm --filter @cerebro/orchestrator db:migrate
 
-# 4. Dev (orquestador + web en paralelo)
+# 5. Dev (orquestador + web en paralelo)
 pnpm run dev
-# Hono: http://localhost:3001/health
-# Next: http://localhost:3000
+# Hono: http://localhost:3001/health — Qwen Chat: http://localhost:3000/qwen-chat
+# Misiones: http://localhost:3000 — Dashboard: http://localhost:3000/dashboard
 ```
+
+Ver `docs/setup.md` (guía escalable) y `docs/qwen-chat.md` (diseño Qwen Chat).
 
 ## Estructura
 
@@ -47,10 +59,12 @@ docs/                  # 8 docs del plan (arquitectura → gobernanza)
 | 2 | `docs/stack.md` | Stack, requisitos máquina, mitigaciones Windows |
 | 3 | `docs/monorepo.md` | Árbol, workspaces, turbo pipelines |
 | 4 | `docs/protocols.md` | `MissionSchema` / `MissionReportSchema` (Zod) |
-| 5 | `docs/adapters.md` | Qwen (API+Playwright), DSH, Opencode |
+| 5 | `docs/adapters.md` | Qwen Chat QwenMax-3.8, DSH, Opencode |
 | 6 | `docs/database.md` | Drizzle + pgvector, `vector(1536)`, pglite fallback |
-| 7 | `docs/roadmap.md` | 6 fases (13 días) + gates |
+| 7 | `docs/roadmap.md` | 6 fases + 6b Qwen Chat (16 días) + gates |
 | 8 | `docs/governance.md` | Aislamiento, comandos bloqueados, gate calidad, memoria |
+| 9 | `docs/qwen-chat.md` | Diseño escalable Qwen Chat (streaming, PG, auto-misión, login, Obsidian) |
+| 10 | `docs/setup.md` | Guía escalable + `iniciar.bat` (levanta todo) |
 
 ## Stack
 
@@ -77,7 +91,6 @@ Ver `docs/governance.md`.
 
 ## Roadmap
 
-FASE 0 (hoy): scaffold + docs ✓
-FASE 1: Core (Hono+PG) → FASE 2: Opencode → FASE 3: DSH → FASE 4: Qwen → FASE 5: Router/Supervisor → FASE 6: Frontend
+FASE 0: scaffold ✓ — FASE 1: Core ✓ — FASE 2: Opencode ✓ — FASE 3: DSH ✓ — FASE 4: Qwen Chat QwenMax-3.8 ✓ — FASE 5: Router/Supervisor ✓ — FASE 6: Frontend ✓ — FASE 6b: Qwen Chat Asistente (ruta `/qwen-chat`, PG, streaming, auto-misión, login en caliente, Obsidian prep)
 
-Ver `docs/roadmap.md` para criterio de salida por fase.
+Ver `docs/roadmap.md` y `docs/qwen-chat.md`.

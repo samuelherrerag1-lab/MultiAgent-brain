@@ -37,11 +37,15 @@ Usuario ──HTTP/SSE──▶ Next.js 15 (apps/web)
 |---|---|---|
 | **Frontend** | `apps/web` | Chat → Orquestador, Kanban de misiones (lectura PG), SSE streaming |
 | **Orquestador (Líder)** | `apps/orchestrator/src/index.ts` | Hono server, Zod validation, `TaskRouter`, `Supervisor`, `GovernanceGuard` |
-| **Qwen Adapter** | `apps/orchestrator/src/adapters/qwen.ts` | Llama a `qwen-token-plan` API (Aliyun compatible-mode). Playwright bridge solo como `experimental/` feature-flag |
+| **Frontend** | `apps/web` | Chat Misiones (`/`) + **Qwen Chat** (`/qwen-chat` streaming, selector modelo, login en caliente) + Kanban (`/dashboard`), SSE |
+| **Orquestador (Líder)** | `apps/orchestrator/src/index.ts` | Hono server, Zod validation, `TaskRouter`, `Supervisor`, `GovernanceGuard`, `qwenChatRouter` |
+| **Qwen Chat** | `apps/orchestrator/src/bridges/qwen.chat.ts` | **QwenMax-3.8** vía `chat.qwen.ai` Playwright `PersistentContext` `%LOCALAPPDATA%\CerebroQwen\user-data` (sin API), streaming incremental, login |
+| **Qwen Adapter** | `apps/orchestrator/src/bridges/qwen.ts` | Wrapper `Adapter` para `plan/review/unblock` + `consultArchitectChat` para chat libre |
 | **DSH Adapter** | `apps/orchestrator/src/adapters/deepseek.ts` | HTTP/MCP hacia plugin `dsh-mission-gateway` (a crear en DSH). Delegación a subagentes internos |
-| **Opencode Adapter** | `apps/orchestrator/src/adapters/opencode.ts` | `Bun.spawn` → `opencode run --format json --dir <worktree>` |
-| **DB** | `packages/db` o `apps/orchestrator/src/db` | Drizzle ORM, migraciones, `pgvector` |
+| **Opencode Adapter** | `apps/orchestrator/src/adapters/opencode.ts` | `spawn` → `opencode run --format json --dir <worktree>` |
+| **DB** | `apps/orchestrator/src/db` | Drizzle ORM, `missions`/`reports`/`decisions`/`qwenConversations`/`qwenMessages`/`qwenMemory` (+ futuro `obsidianDocuments`), `pgvector` + pglite fallback |
 | **Shared** | `packages/shared` | Zod schemas, tipos, `MissionType`, `Complexity` |
+| **Scripts** | `iniciar.bat`/`iniciar.ps1` | Levantan todo el entorno (checks, pnpm, playwright, DB, orquestador 3001 + web 3000) |
 
 ## 1.4 Flujo de una misión (Turn)
 
@@ -95,7 +99,8 @@ sequenceDiagram
 |---|---|---|---|
 | ADR-001 | Hono como Líder HTTP (no plugin Cordis) | Plugin `@deepseek-ai/dsh-brain` | Desacopla Cerebro de DSH, permite deploy independiente, familiar para equipo |
 | ADR-002 | Zod como única validación | Typert (DSH) | Compartido Frontend/Backend/Agentes, sin codegen |
-| ADR-003 | Qwen vía API, no Playwright primario | Scraping `chat.qwen.ai` | Estabilidad, contrato, sin fragilidad DOM. Playwright queda experimental |
+| ADR-003 | QwenMax-3.8 vía Chat Playwright (PersistentContext), sin API | Qwen API `qwen-token-plan` | Requisito explícito: Qwen Chat QwenMax-3.8, sesión GitHub, sin APIs. Playwright + selectores robustos + login en caliente |
+| ADR-003b | Qwen Chat escalable con PG + streaming + auto-misión | Chat efímero sin persistencia | Escalabilidad y Obsidian futuro: conversaciones y mensajes en PG, streaming incremental, si intent==project auto-genera `Mission` y ejecuta vía `Supervisor` |
 | ADR-004 | `git worktree` + `sandbox-policy` para aislamiento | Solo ramas | Aislamiento FS real, permite ejecución paralela |
 | ADR-005 | PostgreSQL + pgvector | SQLite + sqlite-vec | Necesario para RAG futuro y concurrencia; pglite para tests locales |
 

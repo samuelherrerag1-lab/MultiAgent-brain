@@ -13,8 +13,9 @@
 | 4 | Qwen | 2 | `QwenApiAdapter` + `consultArchitect()` JSON |
 | 5 | Router & Supervisor | 2 | `TaskRouter` + `Supervisor` + Governance |
 | 6 | Frontend | 3 | Next.js Chat + Kanban + SSE |
+| 6b | Qwen Asistente | 3 | `/qwen-chat` streaming + PG persistente + auto-misión + login en caliente + Obsidian prep |
 
-**Total: 13 días** (ajustado de 12 por FASE 0).
+**Total: 16 días** (ajustado por FASE 6b escalable).
 
 ---
 
@@ -149,6 +150,30 @@
 **Tests:** `apps/web` Vitest + Playwright e2e (opcional).
 
 **Salida:** Usuario escribe objetivo en Chat, ve progreso en Kanban y logs streaming.
+
+---
+
+## FASE 6b: Qwen Chat Asistente Escalable (Días 13-15)
+
+> Ruta separada `/qwen-chat`, persistente PG, streaming incremental, auto-misión, selector modelos, login en caliente, preparado Obsidian.
+
+**Objetivo:** Asistente conversacional `QwenMax-3.8` (Chat, sin API) para `Hola`/preguntas, que si detecta intención de proyecto auto-genere `Mission` y la ejecute.
+
+**Tareas:**
+
+1. **DB:** `qwenConversations` (`id, title, modelLabel`) + `qwenMessages` (`role, content`) + `qwenMemory` (`embedding` nullable) en `apps/orchestrator/src/db/schema.ts`; `drizzle-kit generate` (ver `docs/qwen-chat.md:3`).
+2. **Backend:** `apps/orchestrator/src/routes/qwenChat.ts` con `POST /api/qwen/chat` (no stream), `POST /api/qwen/chat/stream` (SSE `chat:chunk`), `GET /api/qwen/conversations`, `GET /api/qwen/health`, `POST /api/qwen/login` (abre `headful`); modificar `qwen.chat.ts` a `consultArchitectChatStream` (polling `innerText` cada 400ms) + `Mutex` (`p-queue` concurrency 1); quitar `slice(4000)` para chat.
+3. **Frontend:** `apps/web/app/qwen-chat/page.tsx` (bubbles, `Select` modelo `QwenMax-3.8/QwenMax/QwenTurbo`, `Badge` health, botón **Iniciar sesión Qwen** si `QWEN_LOGIN_REQUIRED`), `apps/web/lib/qwenApi.ts`, `apps/web/app/layout.tsx` link `Qwen Chat` (renombrar `Chat`→`Misiones`).
+4. **Auto-misión:** `MissionGenerator` (Qwen JSON → `MissionSchema` → `route` → `Supervisor.run`) si intent `project`; SSE `chat:mission_created` con link a `Dashboard`.
+5. **Login en caliente:** `POST /api/qwen/login` lanza `PersistentContext` headful en `%LOCALAPPDATA%\CerebroQwen\user-data` (ya confirmado), front muestra `SSE qwen:login_status`.
+
+**Tests:** `qwen.test.ts` ya tiene `RUN_REAL_QWEN=1` — extender con `stream` y `login`; `pnpm test` 2 skipped por defecto.
+
+**Salida:** En `/qwen-chat` escribes `Hola`, ves streaming incremental `QwenMax-3.8`, cambias modelo y responde diferente, botón restaura sesión, `crea API de notas` → `Mission` en `Dashboard` y se ejecuta.
+
+Ver `docs/qwen-chat.md` para diseño completo y `docs/setup.md` para `iniciar.bat`.
+
+---
 
 ---
 
