@@ -78,9 +78,9 @@ Write-Host "Verificando Chromium..." -ForegroundColor Yellow
 pnpm --filter "@cerebro/orchestrator" exec playwright install chromium 2>$null
 if ($LASTEXITCODE -ne 0) { Write-Host "  [WARN] playwright install pudo fallar (puede ya estar)" -ForegroundColor Yellow } else { Write-Host "  Chromium OK" -ForegroundColor Green }
 
-# DB: docker compose si DATABASE_URL es local
+# DB: docker compose si DATABASE_URL es local (cualquier PG en localhost)
 $envContent = Get-Content ".env" -ErrorAction SilentlyContinue | Out-String
-if ($envContent -match "DATABASE_URL=postgresql://cerebro:cerebro@localhost") {
+if ($envContent -match "DATABASE_URL=.*localhost") {
   if (Test-Command docker) {
     Write-Host "[DB] Levantando PostgreSQL via docker compose..." -ForegroundColor Yellow
     docker compose up -d db
@@ -95,6 +95,15 @@ Write-Host " Levantando Orquestador (3001) y Web (3000)" -ForegroundColor White
 Write-Host "==============================================" -ForegroundColor White
 Write-Host ""
 
+Write-Host "[Cerebro] Limpiando procesos previos en puertos 3000 y 3001..." -ForegroundColor Yellow
+3000, 3001 | ForEach-Object {
+  $port = $_
+  Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
+    Write-Host "  Liberando puerto $port [PID $($_.OwningProcess)]..." -ForegroundColor Yellow
+    Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue
+  }
+}
+
 Write-Host "[Cerebro] Iniciando Orquestador en http://localhost:3001 ..." -ForegroundColor Cyan
 Start-Process -FilePath "cmd.exe" -ArgumentList "/k", "pnpm --filter `"@cerebro/orchestrator`" dev" -WorkingDirectory $Root -WindowStyle Normal
 
@@ -102,11 +111,20 @@ Write-Host "[Cerebro] Iniciando Web en http://localhost:3000 ..." -ForegroundCol
 Start-Process -FilePath "cmd.exe" -ArgumentList "/k", "pnpm --filter `"@cerebro/web`" dev" -WorkingDirectory $Root -WindowStyle Normal
 
 Write-Host ""
-Write-Host "Esperando 6s..." -ForegroundColor Yellow
-Start-Sleep -Seconds 6
+Write-Host "Esperando servicios (hasta 30s)..." -ForegroundColor Yellow
+for ($i=1; $i -le 15; $i++) {
+  Start-Sleep -Seconds 2
+  try { $r=Invoke-WebRequest -Uri http://localhost:3001/health -TimeoutSec 2 -UseBasicParsing; if($r.StatusCode -eq 200){ Write-Host "  Orquestador: 200 OK (intento $i)" -ForegroundColor Green; break } } catch {}
+  if ($i -eq 15) { Write-Host "  Orquestador: aún iniciando..." -ForegroundColor Yellow }
+}
+for ($i=1; $i -le 15; $i++) {
+  Start-Sleep -Seconds 2
+  try { $r=Invoke-WebRequest -Uri http://localhost:3000 -TimeoutSec 2 -UseBasicParsing; if($r.StatusCode -eq 200){ Write-Host "  Web: 200 OK (intento $i)" -ForegroundColor Green; break } } catch {}
+  if ($i -eq 15) { Write-Host "  Web: aún iniciando..." -ForegroundColor Yellow }
+}
 
 Write-Host ""
-Write-Host "Comprobando salud..." -ForegroundColor Yellow
+Write-Host "Comprobando salud final..." -ForegroundColor Yellow
 try {
   $r = Invoke-WebRequest -Uri http://localhost:3001/health -TimeoutSec 5 -UseBasicParsing
   Write-Host "  Orquestador: $($r.StatusCode) OK http://localhost:3001/health" -ForegroundColor Green

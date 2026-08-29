@@ -439,7 +439,7 @@ app.route("/api/qwen", qwenChatRouter);
 app.notFound((c) => c.json({ error: "Not found", path: c.req.path }, 404));
 
 // ---------------------------------------------------------------------------
-// Boot
+// Boot & Graceful Shutdown
 // ---------------------------------------------------------------------------
 const port = Number(process.env.PORT || 3001);
 
@@ -451,6 +451,14 @@ if (import.meta.url === `file://${process.argv[1]?.replace(/\\/g, "/")}` || proc
       console.log(`[cerebro] listening on http://localhost:${info.port}`);
       console.log(`[cerebro] health: http://localhost:${info.port}/health`);
     });
+
+    const shutdown = async () => {
+      await qwenAdapter.close().catch(() => {});
+      process.exit(0);
+    };
+
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
   }
 }
 

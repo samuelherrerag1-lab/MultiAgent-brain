@@ -3,27 +3,23 @@ setlocal EnableDelayedExpansion
 chcp 65001 >nul
 title Cerebro de Agentes - Iniciando...
 
-:: ============================================================
-:: Cerebro de Agentes — Levanta todo el entorno correctamente
-:: - Checks: Node, pnpm, Git, Ollama, Playwright, Qwen profile
-:: - pnpm install, playwright install, .env, DB, Orquestador + Web
-:: Ubicación: C:\Users\USUARIO\Documents\Samuel\Cerebro de Agentes
-:: Uso: doble click o .\iniciar.bat
-:: ============================================================
+REM ============================================================
+REM Cerebro de Agentes - Levanta todo el entorno correctamente
+REM - Checks: Node, pnpm, Git, Playwright, Qwen profile, env
+REM - Orquestador en puerto 3001 y Web en puerto 3000
+REM ============================================================
 
 set "ROOT=%~dp0"
-:: Quitar barra final si existe
 if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
-echo [Cerebro] Root: %ROOT%
 cd /d "%ROOT%"
 
 echo.
 echo ==============================================
-echo  Cerebro de Agentes — Iniciando entorno
+echo  Cerebro de Agentes - Iniciando entorno
 echo ==============================================
 echo.
 
-:: ---------- Checks ----------
+REM ---------- Checks ----------
 echo [1/7] Verificando Node...
 where node >nul 2>&1
 if errorlevel 1 (
@@ -44,12 +40,15 @@ for /f "tokens=*" %%v in ('pnpm --version 2^>nul') do echo   pnpm %%v OK
 
 echo [3/7] Verificando Git...
 where git >nul 2>&1
-if errorlevel 1 echo   [WARN] Git no encontrado (worktrees usarán fallback mkdir)
-for /f "tokens=*" %%v in ('git --version 2^>nul') do echo   %%v OK
+if errorlevel 1 (
+  echo   [WARN] Git no encontrado - worktrees usaran fallback mkdir
+) else (
+  for /f "tokens=*" %%v in ('git --version 2^>nul') do echo   %%v OK
+)
 
 echo [4/7] Verificando Playwright...
 if not exist "%LOCALAPPDATA%\ms-playwright" (
-  echo   Playwright no encontrado, se instalará con pnpm...
+  echo   Playwright no encontrado, se instalara con pnpm...
 ) else (
   echo   Playwright OK en %LOCALAPPDATA%\ms-playwright
 )
@@ -63,7 +62,7 @@ if not exist "%QWEN_DIR%" (
   echo   Qwen profile OK en %QWEN_DIR%
 )
 if not exist "%QWEN_DIR%\Default" (
-  echo   [INFO] Primera vez: ejecuta pnpm --filter @cerebro/orchestrator exec tsx scripts/setup-qwen-profile.ts -- --headful para login GitHub
+  echo   [INFO] Primera vez: ejecuta pnpm --filter @cerebro/orchestrator exec tsx scripts/setup-qwen-profile.ts -- --headful
 )
 
 echo [6/7] Verificando .env...
@@ -71,7 +70,7 @@ if not exist ".env" (
   if exist ".env.example" (
     echo   Creando .env desde .env.example...
     copy /y ".env.example" ".env" >nul
-    echo   [ACCION] Edita .env con DATABASE_URL si usas Neon/PG (vacío = pglite)
+    echo   [ACCION] Edita .env con DATABASE_URL si usas Neon/PG [vacio = pglite]
   ) else (
     echo   [WARN] .env.example no encontrado
   )
@@ -81,10 +80,10 @@ if not exist ".env" (
 
 echo [7/7] Verificando node_modules...
 if not exist "node_modules" (
-  echo   Instalando deps (pnpm install)...
+  echo   Instalando dependencias [pnpm install]...
   call pnpm install
   if errorlevel 1 (
-    echo [ERROR] pnpm install falló
+    echo [ERROR] pnpm install fallo
     pause
     exit /b 1
   )
@@ -92,51 +91,67 @@ if not exist "node_modules" (
   echo   node_modules OK
 )
 
-:: Playwright Chromium si falta (filtro con comillas para evitar @ en cmd)
-pnpm --filter "@cerebro/orchestrator" exec playwright install chromium >nul 2>&1
-if errorlevel 1 echo [WARN] playwright install chromium falló (puede ya estar instalado)
+REM Playwright Chromium
+call pnpm --filter "@cerebro/orchestrator" exec playwright install chromium >nul 2>&1
+if errorlevel 1 echo [WARN] playwright install chromium pudo fallar [puede ya estar instalado]
 
-:: DB: Docker compose si disponible y DATABASE_URL es local
-findstr /R "DATABASE_URL=postgresql://cerebro:cerebro@localhost" .env >nul 2>&1
-if %errorlevel%==0 (
+REM DB Docker si DATABASE_URL local (cualquier PG en localhost)
+findstr /R "DATABASE_URL=.*localhost" .env >nul 2>&1
+if not errorlevel 1 (
   where docker >nul 2>&1
   if not errorlevel 1 (
     echo [DB] Levantando PostgreSQL via docker compose...
-    docker compose up -d db
+    call docker compose up -d db
   ) else (
-    echo [DB] Docker no encontrado — usando pglite (DATABASE_URL vacío o Neon)
+    echo [DB] Docker no encontrado - usando pglite
   )
 )
 
 echo.
 echo ==============================================
-echo  Levantando Orquestador (3001) y Web (3000)
+echo  Levantando Orquestador en 3001 y Web en 3000
 echo ==============================================
 echo.
 
-:: Matar procesos previos en esos puertos (opcional)
-:: Cerramos solo si el usuario quiere — no forzamos
+echo [Cerebro] Limpiando procesos previos en puertos 3000 y 3001...
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr /R /C:":3001.*LISTENING"') do (
+  echo   Liberando puerto 3001 [PID %%a]...
+  taskkill /F /PID %%a >nul 2>&1
+)
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr /R /C:":3000.*LISTENING"') do (
+  echo   Liberando puerto 3000 [PID %%a]...
+  taskkill /F /PID %%a >nul 2>&1
+)
 
 echo [Cerebro] Iniciando Orquestador en http://localhost:3001 ...
-start "Cerebro-Orquestador" /D "%ROOT%" cmd /k pnpm --filter "@cerebro/orchestrator" dev
+start "Cerebro-Orquestador" /D "%ROOT%" cmd /k "pnpm --filter @cerebro/orchestrator dev"
 
 echo [Cerebro] Iniciando Web en http://localhost:3000 ...
-start "Cerebro-Web" /D "%ROOT%" cmd /k pnpm --filter "@cerebro/web" dev
+start "Cerebro-Web" /D "%ROOT%" cmd /k "pnpm --filter @cerebro/web dev"
 
 echo.
-echo Esperando 6s para que ambos levanten...
-timeout /t 6 /nobreak >nul
-
-echo.
-echo Comprobando salud...
-powershell -Command "try { $r=Invoke-WebRequest -Uri http://localhost:3001/health -TimeoutSec 5; Write-Host \"  Orquestador: $($r.StatusCode) OK\" -ForegroundColor Green } catch { Write-Host \"  Orquestador: aún iniciando... ($_)\" -ForegroundColor Yellow }"
-powershell -Command "try { $r=Invoke-WebRequest -Uri http://localhost:3000 -TimeoutSec 5; Write-Host \"  Web: $($r.StatusCode) OK\" -ForegroundColor Green } catch { Write-Host \"  Web: aún iniciando...\" -ForegroundColor Yellow }"
+echo Esperando servicios (hasta 30s)...
+for /L %%i in (1,1,15) do (
+  timeout /t 2 /nobreak >nul
+  powershell -Command "try { $r=Invoke-WebRequest -Uri http://localhost:3001/health -TimeoutSec 2 -UseBasicParsing; if($r.StatusCode -eq 200){ Write-Host '  Orquestador: 200 OK' -ForegroundColor Green; exit 0 } } catch {}" >nul 2>&1
+  if not errorlevel 1 goto :health_web
+)
+:health_web
+for /L %%i in (1,1,15) do (
+  timeout /t 2 /nobreak >nul
+  powershell -Command "try { $r=Invoke-WebRequest -Uri http://localhost:3000 -TimeoutSec 2 -UseBasicParsing; if($r.StatusCode -eq 200){ Write-Host '  Web: 200 OK' -ForegroundColor Green; exit 0 } } catch {}" >nul 2>&1
+  if not errorlevel 1 goto :health_done
+)
+:health_done
+echo Comprobando salud final...
+powershell -Command "try { $r=Invoke-WebRequest -Uri http://localhost:3001/health -TimeoutSec 5 -UseBasicParsing; Write-Host '  Orquestador: ' + $r.StatusCode + ' OK' -ForegroundColor Green } catch { Write-Host '  Orquestador: iniciando...' -ForegroundColor Yellow }"
+powershell -Command "try { $r=Invoke-WebRequest -Uri http://localhost:3000 -TimeoutSec 5 -UseBasicParsing; Write-Host '  Web: ' + $r.StatusCode + ' OK' -ForegroundColor Green } catch { Write-Host '  Web: iniciando...' -ForegroundColor Yellow }"
 
 echo.
 echo ==============================================
 echo  Listo!
 echo    Web Chat Misiones: http://localhost:3000
-echo    Qwen Chat:         http://localhost:3000/qwen-chat  (FASE 6b pendiente de implementar)
+echo    Qwen Chat:         http://localhost:3000/qwen-chat
 echo    Dashboard Kanban:  http://localhost:3000/dashboard
 echo    Orquestador:       http://localhost:3001/health
 echo ==============================================
@@ -144,8 +159,8 @@ echo.
 echo Para detener: cierra las dos ventanas CMD abiertas.
 echo Para Qwen login: pnpm --filter @cerebro/orchestrator exec tsx scripts/setup-qwen-profile.ts -- --headful
 echo.
-:: Abrir navegador
-start "" "http://localhost:3000"
+powershell -Command "Start-Process 'http://localhost:3000'" >nul 2>&1
+if errorlevel 1 explorer "http://localhost:3000" >nul 2>&1
 
 pause
 endlocal

@@ -12,12 +12,30 @@ import os from "node:os";
 const isHeadful = process.argv.includes("--headful");
 const headless = !isHeadful;
 
-const defaultDir = path.join(os.homedir(), "AppData", "Local", "CerebroQwen", "user-data");
-if (process.platform !== "win32") {
-  // fallback para no-Windows (no usado pero por completitud)
-}
+import fs from "node:fs";
+
+const USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
+
+const CHROME_ARGS = [
+  "--disable-blink-features=AutomationControlled",
+  "--no-first-run",
+  "--no-default-browser-check",
+  "--disable-infobars",
+  "--password-store=basic",
+];
 
 const userDataDir = process.env.QWEN_USER_DATA_DIR || path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "CerebroQwen", "user-data");
+
+try {
+  const lockFiles = ["SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"];
+  for (const f of lockFiles) {
+    const p = path.join(userDataDir, f);
+    if (fs.existsSync(p)) {
+      try { fs.unlinkSync(p); } catch {}
+    }
+  }
+} catch {}
 
 console.log(`[setup-qwen] userDataDir=${userDataDir}`);
 console.log(`[setup-qwen] headless=${headless} (usa --headful para login manual)`);
@@ -25,8 +43,11 @@ console.log(`[setup-qwen] Abriendo https://chat.qwen.ai ...`);
 
 const ctx = await chromium.launchPersistentContext(userDataDir, {
   headless,
-  args: ["--disable-blink-features=AutomationControlled"],
+  userAgent: USER_AGENT,
+  ignoreDefaultArgs: ["--enable-automation"],
+  args: CHROME_ARGS,
   viewport: { width: 1280, height: 900 },
+  locale: "es-ES",
 });
 
 const page = ctx.pages()[0] || (await ctx.newPage());

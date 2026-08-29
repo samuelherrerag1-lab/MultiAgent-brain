@@ -13,6 +13,7 @@ export type QwenMessage = {
   conversationId: string;
   role: "user" | "assistant" | "system";
   content: string;
+  thought?: string | null;
   modelLabel?: string | null;
   createdAt: string;
 };
@@ -66,6 +67,18 @@ export async function fetchQwenMessages(conversationId: string): Promise<QwenMes
   }
 }
 
+export async function deleteQwenConversation(conversationId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${ORCHESTRATOR_URL}/api/qwen/conversations/${conversationId}`, {
+      method: "DELETE",
+    });
+    return res.ok;
+  } catch (err) {
+    console.error("[deleteQwenConversation]", err);
+    return false;
+  }
+}
+
 export async function sendQwenChatMessage(payload: {
   conversationId?: string | undefined;
   message: string;
@@ -89,6 +102,7 @@ export function streamQwenChatMessage(
   payload: { conversationId?: string | undefined; message: string; modelLabel?: string | undefined },
   handlers: {
     onStart?: (data: { conversationId: string }) => void;
+    onThought?: (delta: string) => void;
     onChunk?: (delta: string) => void;
     onMissionCreated?: (data: { missionId: string; title: string; adapter: string }) => void;
     onDone?: (data: { conversationId: string; missionId?: string }) => void;
@@ -143,6 +157,8 @@ export function streamQwenChatMessage(
               const data = JSON.parse(rawData);
               if (currentEvent === "chat:started") {
                 handlers.onStart?.(data);
+              } else if (currentEvent === "chat:thought") {
+                handlers.onThought?.(data.delta || "");
               } else if (currentEvent === "chat:chunk") {
                 handlers.onChunk?.(data.delta || "");
               } else if (currentEvent === "chat:mission_created") {
@@ -155,6 +171,8 @@ export function streamQwenChatMessage(
             } catch {
               if (currentEvent === "chat:chunk") {
                 handlers.onChunk?.(rawData);
+              } else if (currentEvent === "chat:thought") {
+                handlers.onThought?.(rawData);
               }
             }
           }

@@ -121,6 +121,21 @@ qwenChatRouter.get("/conversations/:id/messages", async (c) => {
   }
 });
 
+// 4.1 Eliminar conversación
+qwenChatRouter.delete("/conversations/:id", async (c) => {
+  const id = c.req.param("id");
+  try {
+    const { db } = await getDb();
+    await db.delete(qwenMessages).where(eq(qwenMessages.conversationId, id));
+    await db.delete(qwenConversations).where(eq(qwenConversations.id, id));
+    return c.json({ ok: true, id });
+  } catch (err) {
+    console.error(`[DELETE /api/qwen/conversations/${id}]`, err);
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+
 // 5. Chat síncrono (sin stream)
 qwenChatRouter.post("/chat", zValidator("json", SendMessageSchema), async (c) => {
   const { conversationId: givenConvId, message, modelLabel = "QwenMax-3.8" } = c.req.valid("json");
@@ -307,8 +322,12 @@ qwenChatRouter.post("/chat/stream", zValidator("json", SendMessageSchema), async
         let fullReply = "";
         fullReply = await consultArchitectChatStream(
           message,
-          (chunk) => {
-            send("chat:chunk", { delta: chunk });
+          (chunk, meta) => {
+            if (meta?.type === "thought") {
+              send("chat:thought", { delta: chunk, isThinking: true });
+            } else {
+              send("chat:chunk", { delta: chunk });
+            }
           },
           { modelLabel },
         );

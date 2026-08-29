@@ -47,6 +47,19 @@ export const QWEN_SELECTORS = {
     'div[class*="assistant"]',
   ],
 
+  /** Contenedor de razonamiento / pensamiento */
+  thought: [
+    'details',
+    '[data-role="thought"]',
+    '[data-testid="thought-content"]',
+    '.thought-content',
+    '.reasoning-content',
+    'div[class*="thought"]',
+    'div[class*="reason"]',
+    'div[class*="think"]',
+  ],
+
+
   /** Selector de modelo (para elegir QwenMax-3.8) */
   modelSelector: [
     '[data-testid="model-selector"]',

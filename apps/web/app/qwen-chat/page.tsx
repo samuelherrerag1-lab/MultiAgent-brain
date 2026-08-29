@@ -1,352 +1,450 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import { Select } from "@/components/ui/select";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
-  fetchQwenHealth,
-  startQwenLogin,
   fetchQwenConversations,
   fetchQwenMessages,
   streamQwenChatMessage,
+  startQwenLogin,
+  deleteQwenConversation,
   type QwenConversation,
   type QwenMessage,
-  type QwenHealth,
 } from "@/lib/qwenApi";
+import { QwenMessageView } from "@/components/QwenMessageView";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
 import {
-  Brain,
   Send,
   Loader2,
-  Sparkles,
+  Bot,
+  User,
   Plus,
-  RefreshCw,
-  LogIn,
-  CheckCircle2,
-  AlertCircle,
-  FolderPlus,
-  MessageSquare,
+  Trash2,
+  ExternalLink,
+  ShieldAlert,
+  Search,
+  Sparkles,
+  Layers,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import Link from "next/link";
+
+const SUGGESTED_PROMPTS = [
+  "Diseña la arquitectura para el sistema de memoria vectorial con PostgreSQL y pgvector",
+  "Revisa el flujo de gobernanza en guard.ts y sugiere mejoras para comandos bloqueados",
+  "Planifica las pruebas de integración para el adaptador de Opencode",
+];
+
+const AVAILABLE_MODELS = [
+  { id: "QwenMax-3.8", label: "QwenMax-3.8", desc: "Arquitecto Líder (Deep Reasoning)" },
+  { id: "Qwen-Max", label: "Qwen-Max", desc: "Razonamiento Complejo" },
+  { id: "Qwen-Turbo", label: "Qwen-Turbo", desc: "Respuestas Rápidas" },
+  { id: "Qwen-Plus", label: "Qwen-Plus", desc: "Balanceado" },
+];
 
 export default function QwenChatPage() {
   const [conversations, setConversations] = useState<QwenConversation[]>([]);
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
   const [messages, setMessages] = useState<QwenMessage[]>([]);
   const [input, setInput] = useState("");
-  const [modelLabel, setModelLabel] = useState("QwenMax-3.8");
-  const [health, setHealth] = useState<QwenHealth | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [streamingText, setStreamingText] = useState("");
-  const [createdMission, setCreatedMission] = useState<{ missionId: string; title: string; adapter: string } | null>(null);
-  const [loginStarting, setLoginStarting] = useState(false);
+  const [selectedModel, setSelectedModel] = useState("QwenMax-3.8");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const abortRef = useRef<(() => void) | null>(null);
+  const [streaming, setStreaming] = useState(false);
+  const [streamContent, setStreamContent] = useState("");
+  const [streamThought, setStreamThought] = useState("");
+  const [isThinking, setIsThinking] = useState(false);
+  const [createdMission, setCreatedMission] = useState<{ id: string; title: string; adapter: string } | null>(null);
+  const [loginRequired, setLoginRequired] = useState(false);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
+  // In-memory cache de mensajes para cambios instantáneos (0ms)
+  const messagesCache = useRef<Map<string, QwenMessage[]>>(new Map());
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const abortCtrlRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages, streamingText]);
-
-  // Cargar salud y conversaciones iniciales
-  useEffect(() => {
-    loadHealth();
-    loadConversations();
-    const interval = setInterval(loadHealth, 30_000);
-    return () => clearInterval(interval);
+  const scrollToBottom = useCallback((smooth = true) => {
+    messagesEndRef.current?.scrollIntoView({ behavior: smooth ? "smooth" : "auto" });
   }, []);
 
-  // Cargar mensajes cuando cambia la conversación activa
+  // Cargar lista de conversaciones inicial
+  const loadConversations = useCallback(async () => {
+    try {
+      const list = await fetchQwenConversations();
+      setConversations(list);
+    } catch {}
+  }, []);
+
   useEffect(() => {
-    if (activeConvId) {
-      loadMessages(activeConvId);
+    loadConversations();
+  }, [loadConversations]);
+
+  useEffect(() => {
+    scrollToBottom(true);
+  }, [messages, streamContent, streamThought, scrollToBottom]);
+
+  // Selección instantánea de conversación desde caché
+  const handleSelectConversation = async (convId: string) => {
+    if (activeConvId === convId) return;
+    setActiveConvId(convId);
+    setCreatedMission(null);
+
+    // 1. Mostrar de inmediato desde memoria si existe (0ms)
+    if (messagesCache.current.has(convId)) {
+      setMessages(messagesCache.current.get(convId)!);
     } else {
       setMessages([]);
     }
-  }, [activeConvId]);
 
-  const loadHealth = async () => {
-    const h = await fetchQwenHealth();
-    setHealth(h);
+    // 2. Revalidar en segundo plano
+    try {
+      const msgs = await fetchQwenMessages(convId);
+      messagesCache.current.set(convId, msgs);
+      setMessages(msgs);
+    } catch {}
   };
 
-  const loadConversations = async () => {
-    const list = await fetchQwenConversations();
-    setConversations(list);
-  };
-
-  const loadMessages = async (id: string) => {
-    const msgs = await fetchQwenMessages(id);
-    setMessages(msgs);
-  };
-
-  const handleStartLogin = async () => {
-    setLoginStarting(true);
-    await startQwenLogin();
-    setTimeout(() => {
-      setLoginStarting(false);
-      loadHealth();
-    }, 4000);
-  };
-
-  const handleNewConversation = () => {
+  // Crear nueva conversación instantáneamente
+  const handleNewChat = () => {
+    abortCtrlRef.current?.abort();
     setActiveConvId(null);
     setMessages([]);
-    setStreamingText("");
+    setStreamContent("");
+    setStreamThought("");
+    setIsThinking(false);
     setCreatedMission(null);
+    setInput("");
+    textareaRef.current?.focus();
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || loading) return;
+  // Eliminar conversación
+  const handleDeleteConversation = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await deleteQwenConversation(id);
+      messagesCache.current.delete(id);
+      setConversations((prev) => prev.filter((c) => c.id !== id));
+      if (activeConvId === id) {
+        handleNewChat();
+      }
+    } catch (err: any) {
+      alert("Error al eliminar conversación: " + err.message);
+    }
+  };
 
-    const userText = input.trim();
+  const handleSend = async (textToSend?: string) => {
+    const text = (textToSend || input).trim();
+    if (!text || streaming) return;
+
     setInput("");
-    setLoading(true);
-    setStreamingText("");
+    setLoginRequired(false);
     setCreatedMission(null);
-    abortRef.current?.();
+    setStreamContent("");
+    setStreamThought("");
+    setIsThinking(false);
 
-    // Mensaje optimista
-    const tempUserMsg: QwenMessage = {
-      id: "temp-" + Date.now(),
-      conversationId: activeConvId || "new",
+    // Actualización optimista de mensaje del usuario
+    const userMsg: QwenMessage = {
+      id: "temp-user-" + Date.now(),
+      conversationId: activeConvId || "pending",
       role: "user",
-      content: userText,
-      modelLabel,
+      content: text,
       createdAt: new Date().toISOString(),
     };
-    setMessages((prev) => [...prev, tempUserMsg]);
 
-    let accumulatedAssistant = "";
+    const newMessages = [...messages, userMsg];
+    setMessages(newMessages);
+    setStreaming(true);
 
-    const payload: any = { message: userText, modelLabel };
-    if (activeConvId) payload.conversationId = activeConvId;
-
-    const stopStream = streamQwenChatMessage(payload,
-      {
-        onStart: (data) => {
-          if (!activeConvId) {
-            setActiveConvId(data.conversationId);
-            loadConversations();
-          }
+    try {
+      const cancel = streamQwenChatMessage(
+        {
+          message: text,
+          conversationId: activeConvId || undefined,
+          modelLabel: selectedModel,
         },
-        onChunk: (delta) => {
-          accumulatedAssistant += delta;
-          setStreamingText(accumulatedAssistant);
+        {
+          onThought: (delta: string) => {
+            setStreamThought((prev) => prev + delta);
+            setIsThinking(true);
+          },
+          onChunk: (delta: string) => {
+            setIsThinking(false);
+            setStreamContent((prev) => prev + delta);
+          },
+          onMissionCreated: (mission: { missionId: string; title: string; adapter: string }) => {
+            setCreatedMission({ id: mission.missionId, title: mission.title, adapter: mission.adapter });
+          },
+          onDone: async (data: { conversationId: string; missionId?: string }) => {
+            setStreaming(false);
+            setIsThinking(false);
+            const finalId = data.conversationId;
+            if (!activeConvId) {
+              setActiveConvId(finalId);
+            }
+            await loadConversations();
+            if (finalId) {
+              const updatedMsgs = await fetchQwenMessages(finalId);
+              messagesCache.current.set(finalId, updatedMsgs);
+              setMessages(updatedMsgs);
+            }
+            setStreamContent("");
+            setStreamThought("");
+          },
+          onError: (err: string) => {
+            setStreaming(false);
+            setIsThinking(false);
+            if (err.includes("QWEN_LOGIN_REQUIRED") || err.includes("login")) {
+              setLoginRequired(true);
+            }
+          },
         },
-        onMissionCreated: (data) => {
-          setCreatedMission(data);
-        },
-        onDone: (data) => {
-          if (data.conversationId) {
-            setActiveConvId(data.conversationId);
-            loadConversations();
-            loadMessages(data.conversationId);
-          }
-          setStreamingText("");
-          setLoading(false);
-        },
-        onError: (err) => {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: "err-" + Date.now(),
-              conversationId: activeConvId || "error",
-              role: "assistant",
-              content: `⚠️ Error: ${err}`,
-              createdAt: new Date().toISOString(),
-            },
-          ]);
-          setStreamingText("");
-          setLoading(false);
-        },
-      },
-    );
-
-    abortRef.current = stopStream;
+      );
+    } catch (err: any) {
+      setStreaming(false);
+      setIsThinking(false);
+      if (String(err).includes("QWEN_LOGIN_REQUIRED")) {
+        setLoginRequired(true);
+      }
+    }
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  const handleQuickReply = (replyText: string) => {
+    if (streaming) return;
+    handleSend(replyText);
+  };
+
+  const filteredConversations = conversations.filter((c) =>
+    c.title.toLowerCase().includes(searchQuery.toLowerCase()),
+  );
+
   return (
-    <div className="grid grid-cols-1 md:grid-cols-4 gap-6 h-[calc(100vh-140px)]">
-      {/* Sidebar de conversaciones */}
-      <Card className="hidden md:flex md:flex-col bg-zinc-950/60 border-zinc-800">
-        <CardHeader className="p-4 border-b border-zinc-800 flex flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <MessageSquare className="h-4 w-4 text-zinc-400" /> Conversaciones
-          </CardTitle>
-          <Button variant="ghost" size="sm" onClick={handleNewConversation} className="h-8 px-2 text-xs">
-            <Plus className="h-4 w-4 mr-1" /> Nueva
+    <div className="flex h-[calc(100vh-5.5rem)] gap-4 overflow-hidden -mx-4 -my-6 p-4">
+      {/* 📁 Barra Lateral de Conversaciones */}
+      <aside
+        className={`${
+          sidebarOpen ? "w-72" : "w-0"
+        } transition-all duration-200 ease-in-out shrink-0 bg-zinc-950/80 border border-zinc-800/80 rounded-2xl flex flex-col overflow-hidden`}
+      >
+        <div className="p-3 border-b border-zinc-800/80 flex items-center justify-between gap-2">
+          <Button
+            size="sm"
+            onClick={handleNewChat}
+            className="w-full bg-zinc-900 hover:bg-zinc-800 text-zinc-100 text-xs font-semibold h-9 rounded-xl border border-zinc-700/80 flex items-center justify-center gap-1.5 shadow-sm"
+          >
+            <Plus className="h-3.5 w-3.5" /> Nueva conversación
           </Button>
-        </CardHeader>
-        <CardContent className="p-2 flex-1 overflow-y-auto space-y-1">
-          {conversations.length === 0 ? (
-            <p className="text-xs text-zinc-600 text-center py-6">Sin conversaciones previas</p>
+        </div>
+
+        {/* Buscador de chats */}
+        <div className="p-2.5 border-b border-zinc-800/60">
+          <div className="relative">
+            <Search className="h-3.5 w-3.5 absolute left-2.5 top-2.5 text-zinc-500" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Buscar chats..."
+              className="w-full h-8 pl-8 pr-2.5 rounded-lg bg-zinc-900/90 border border-zinc-800 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-zinc-700 font-mono"
+            />
+          </div>
+        </div>
+
+        {/* Lista de Chats con Cambio Instantáneo */}
+        <div className="flex-1 overflow-y-auto p-2 space-y-1 scrollbar-thin">
+          {filteredConversations.length === 0 ? (
+            <div className="text-center py-8 text-xs text-zinc-600">
+              {searchQuery ? "Sin coincidencias" : "No hay conversaciones previas"}
+            </div>
           ) : (
-            conversations.map((c) => (
-              <button
-                key={c.id}
-                onClick={() => setActiveConvId(c.id)}
-                className={`w-full text-left p-2 rounded-md text-xs transition flex flex-col gap-1 ${
-                  activeConvId === c.id
-                    ? "bg-zinc-800 text-white font-medium"
-                    : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
+            filteredConversations.map((conv) => (
+              <div
+                key={conv.id}
+                onClick={() => handleSelectConversation(conv.id)}
+                className={`group w-full text-left p-2.5 rounded-xl text-xs flex items-center justify-between cursor-pointer transition-all ${
+                  activeConvId === conv.id
+                    ? "bg-zinc-800/90 text-zinc-100 font-semibold border border-zinc-700/60 shadow-sm"
+                    : "text-zinc-400 hover:bg-zinc-900/80 hover:text-zinc-200"
                 }`}
               >
-                <span className="line-clamp-1">{c.title || "Conversación"}</span>
-                <span className="text-[10px] text-zinc-600">
-                  {new Date(c.updatedAt).toLocaleDateString()} · {c.modelLabel}
-                </span>
-              </button>
+                <div className="truncate pr-2 flex-1">
+                  <p className="truncate text-xs">{conv.title || "Conversación"}</p>
+                  <span className="text-[10px] text-zinc-500 font-mono">
+                    {new Date(conv.updatedAt).toLocaleDateString()}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={(e) => handleDeleteConversation(conv.id, e)}
+                  className="opacity-0 group-hover:opacity-100 p-1 text-zinc-500 hover:text-rose-400 rounded transition"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
             ))
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </aside>
 
-      {/* Panel principal de Chat */}
-      <div className="md:col-span-3 flex flex-col h-full bg-zinc-950/40 rounded-xl border border-zinc-800 overflow-hidden">
-        {/* Header con selectores de modelo y salud */}
-        <div className="p-4 border-b border-zinc-800 bg-zinc-950 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="h-8 w-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center font-bold">
-              <Brain className="h-5 w-5" />
-            </div>
-            <div>
-              <h2 className="text-sm font-semibold flex items-center gap-2">
-                Qwen Chat Asistente
-                <Badge variant="outline" className="text-xs text-emerald-400 border-emerald-500/30">
-                  Fase 6b
-                </Badge>
-              </h2>
-              <p className="text-xs text-zinc-500">
-                Playwright Persistent Context · QwenMax-3.8 · Auto-misión inteligente
-              </p>
+      {/* 💬 Panel Principal de Chat */}
+      <main className="flex-1 bg-zinc-950/80 border border-zinc-800/80 rounded-2xl flex flex-col overflow-hidden shadow-2xl relative">
+        {/* Top Header */}
+        <header className="px-4 py-3 border-b border-zinc-800/80 bg-zinc-900/40 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <button
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition"
+            >
+              {sidebarOpen ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+            </button>
+            <div className="flex items-center gap-2">
+              <Bot className="h-4 w-4 text-emerald-400" />
+              <h2 className="font-semibold text-xs text-zinc-100">Qwen Asistente Arquitecto</h2>
+              <Badge variant="outline" className="text-[10px] border-emerald-900 bg-emerald-950/50 text-emerald-300">
+                Playwright Persistent
+              </Badge>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
-            <Select
-              value={modelLabel}
-              onChange={(e) => setModelLabel(e.target.value)}
-              className="h-8 text-xs bg-zinc-900 border-zinc-700"
+            <select
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              className="h-8 text-xs bg-zinc-900 border border-zinc-700/80 text-zinc-200 rounded-lg px-2.5 focus:outline-none focus:border-zinc-500 font-mono"
             >
-              <option value="QwenMax-3.8">QwenMax-3.8 (Recomendado)</option>
-              <option value="Qwen-Max">Qwen-Max</option>
-              <option value="Qwen-Turbo">Qwen-Turbo</option>
-              <option value="Qwen-Plus">Qwen-Plus</option>
-            </Select>
-
-            {/* Health Badge */}
-            {health?.ok ? (
-              <Badge className="bg-emerald-950 text-emerald-300 border border-emerald-800 flex items-center gap-1 text-xs">
-                <CheckCircle2 className="h-3 w-3" /> Sesión OK {health.latencyMs ? `(${health.latencyMs}ms)` : ""}
-              </Badge>
-            ) : (
-              <Badge className="bg-amber-950 text-amber-300 border border-amber-800 flex items-center gap-1 text-xs">
-                <AlertCircle className="h-3 w-3" /> {health?.error || "Desconectado"}
-              </Badge>
-            )}
-
-            {/* Login button */}
-            {health && !health.ok && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={handleStartLogin}
-                disabled={loginStarting}
-                className="h-8 text-xs border-amber-700/50 hover:bg-amber-950/30 text-amber-300"
-              >
-                <LogIn className="h-3 w-3 mr-1" />
-                {loginStarting ? "Abriendo..." : "Iniciar sesión Qwen"}
-              </Button>
-            )}
+              {AVAILABLE_MODELS.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label} ({m.desc})
+                </option>
+              ))}
+            </select>
           </div>
-        </div>
+        </header>
 
-        {/* Banner de Auto-Misión Creada */}
-        {createdMission && (
-          <div className="bg-blue-950/40 border-b border-blue-900/50 p-3 px-4 flex items-center justify-between text-xs text-blue-200">
+        {/* Alerta de Login */}
+        {loginRequired && (
+          <div className="bg-amber-950/60 border-b border-amber-900/80 px-4 py-2.5 flex items-center justify-between text-xs text-amber-200">
             <div className="flex items-center gap-2">
-              <FolderPlus className="h-4 w-4 text-blue-400" />
+              <ShieldAlert className="h-4 w-4 text-amber-400 shrink-0" />
+              <span>La sesión de chat.qwen.ai requiere inicio de sesión. Haz clic para abrir el navegador Chromium.</span>
+            </div>
+            <Button
+              size="sm"
+              onClick={() => startQwenLogin()}
+              className="h-7 text-xs bg-amber-600 hover:bg-amber-500 text-white font-medium ml-2"
+            >
+              Iniciar sesión Qwen
+            </Button>
+          </div>
+        )}
+
+        {/* Notificación de Auto-Misión Creada */}
+        {createdMission && (
+          <div className="bg-emerald-950/40 border-b border-emerald-900/80 px-4 py-2.5 flex items-center justify-between text-xs text-emerald-200 animate-in fade-in">
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-emerald-400" />
               <span>
-                Misión generada: <strong>{createdMission.title}</strong> → Adaptador:{" "}
-                <Badge className="bg-blue-900 text-blue-100 text-[10px]">{createdMission.adapter}</Badge>
+                Misión generada automáticamente: <strong>{createdMission.title}</strong>
               </span>
             </div>
             <Link
               href="/dashboard"
-              className="text-xs bg-blue-500 hover:bg-blue-600 text-white px-2 py-1 rounded transition font-medium"
+              className="text-xs bg-emerald-500 hover:bg-emerald-400 text-black font-semibold px-2.5 py-1 rounded-md flex items-center gap-1 transition"
             >
-              Ver en Dashboard →
+              Ver en Dashboard <ExternalLink className="h-3 w-3" />
             </Link>
           </div>
         )}
 
-        {/* Zona de Mensajes */}
-        <div className="flex-1 p-4 overflow-y-auto space-y-4">
-          {messages.length === 0 && !streamingText ? (
-            <div className="h-full flex flex-col items-center justify-center text-center p-8 space-y-3">
-              <div className="h-12 w-12 rounded-full bg-zinc-900 flex items-center justify-center text-zinc-400">
-                <Sparkles className="h-6 w-6 text-emerald-400" />
+        {/* Lista de Mensajes con Renderizado Rico */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
+          {messages.length === 0 && !streaming ? (
+            <div className="h-full flex flex-col items-center justify-center text-center max-w-md mx-auto space-y-4 my-auto">
+              <div className="w-12 h-12 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center text-emerald-400 shadow-inner">
+                <Bot className="h-6 w-6" />
               </div>
-              <h3 className="text-base font-medium">¿En qué puedo ayudarte hoy?</h3>
-              <p className="text-xs text-zinc-500 max-w-md">
-                Pregunta cualquier duda técnica, pide diseño de sistemas o solicita la creación de un nuevo proyecto. Si detecto intención de código o arquitectura, generaré automáticamente una misión para el Orquestador.
-              </p>
-              <div className="flex flex-wrap gap-2 justify-center pt-2">
-                <button
-                  onClick={() => setInput("Explícame cómo funciona el enrutador de tareas en Cerebro")}
-                  className="text-xs bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 px-3 py-1.5 rounded-full text-zinc-400 transition"
-                >
-                  💡 ¿Cómo funciona el router?
-                </button>
-                <button
-                  onClick={() => setInput("Crea una API de autenticación con JWT en TypeScript")}
-                  className="text-xs bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 px-3 py-1.5 rounded-full text-zinc-400 transition"
-                >
-                  🚀 Crea una API con JWT
-                </button>
+              <div>
+                <h3 className="font-semibold text-sm text-zinc-100">¿En qué puedo ayudarte hoy?</h3>
+                <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
+                  Consulta planes de arquitectura, revisión de código, resolución de bloqueos y razonamiento profundo.
+                </p>
+              </div>
+
+              <div className="w-full space-y-1.5 text-left pt-2">
+                {SUGGESTED_PROMPTS.map((promptText, i) => (
+                  <button
+                    key={i}
+                    onClick={() => handleSend(promptText)}
+                    className="w-full p-2.5 rounded-xl border border-zinc-800 bg-zinc-900/60 hover:bg-zinc-900 hover:border-zinc-700 text-xs text-zinc-300 hover:text-white transition text-left"
+                  >
+                    {promptText}
+                  </button>
+                ))}
               </div>
             </div>
           ) : (
             <>
-              {messages.map((m, i) => (
-                <div
-                  key={m.id || i}
-                  className={`flex flex-col ${m.role === "user" ? "items-end" : "items-start"}`}
-                >
+              {messages.map((msg) => {
+                const isUser = msg.role === "user";
+                return (
                   <div
-                    className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
-                      m.role === "user"
-                        ? "bg-white text-black rounded-tr-sm font-medium"
-                        : "bg-zinc-900 text-zinc-200 border border-zinc-800 rounded-tl-sm"
-                    }`}
+                    key={msg.id}
+                    className={`flex gap-3 max-w-3xl ${isUser ? "ml-auto justify-end" : "mr-auto justify-start"} w-full`}
                   >
-                    {m.content}
+                    {!isUser && (
+                      <div className="w-7 h-7 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center shrink-0 text-emerald-400 mt-1">
+                        <Bot className="h-4 w-4" />
+                      </div>
+                    )}
+                    <div
+                      className={`rounded-2xl p-3.5 text-xs shadow-sm max-w-[88%] ${
+                        isUser
+                          ? "bg-zinc-800/90 text-zinc-100 border border-zinc-700/80"
+                          : "bg-zinc-900/80 text-zinc-200 border border-zinc-800/80 w-full"
+                      }`}
+                    >
+                      {isUser ? (
+                        <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                      ) : (
+                        <QwenMessageView
+                          content={msg.content}
+                          onQuickReply={handleQuickReply}
+                        />
+                      )}
+                    </div>
+                    {isUser && (
+                      <div className="w-7 h-7 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0 text-zinc-300 mt-1">
+                        <User className="h-4 w-4" />
+                      </div>
+                    )}
                   </div>
-                  <span className="text-[10px] text-zinc-600 mt-1 px-1">
-                    {m.role === "user" ? "Tú" : m.modelLabel || "Qwen"} ·{" "}
-                    {new Date(m.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
 
-              {/* Burbuja de streaming en vivo */}
-              {streamingText && (
-                <div className="flex flex-col items-start">
-                  <div className="max-w-[85%] rounded-2xl rounded-tl-sm px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap bg-zinc-900 text-zinc-200 border border-zinc-800">
-                    {streamingText}
-                    <span className="inline-block w-1.5 h-4 bg-emerald-400 ml-1 animate-pulse" />
+              {/* Mensaje en Streaming Activo */}
+              {streaming && (
+                <div className="flex gap-3 max-w-3xl mr-auto justify-start w-full">
+                  <div className="w-7 h-7 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center shrink-0 text-emerald-400 mt-1">
+                    <Bot className="h-4 w-4 animate-spin" />
                   </div>
-                  <span className="text-[10px] text-zinc-600 mt-1 px-1 flex items-center gap-1">
-                    <Loader2 className="h-3 w-3 animate-spin" /> Escribiendo...
-                  </span>
+                  <div className="rounded-2xl p-3.5 text-xs shadow-sm bg-zinc-900/90 text-zinc-200 border border-zinc-800 w-full">
+                    <QwenMessageView
+                      content={streamContent}
+                      thought={streamThought}
+                      isStreaming={true}
+                      isThinking={isThinking}
+                    />
+                  </div>
                 </div>
               )}
             </>
@@ -354,29 +452,33 @@ export default function QwenChatPage() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Footer / Input */}
-        <div className="p-3 border-t border-zinc-800 bg-zinc-950">
-          <form onSubmit={handleSubmit} className="flex gap-2 items-end">
+        {/* Input Bar */}
+        <div className="p-3.5 border-t border-zinc-800/80 bg-zinc-900/40">
+          <div className="relative flex items-end gap-2 bg-zinc-900/90 border border-zinc-700/80 rounded-2xl p-2 focus-within:border-zinc-500 shadow-inner">
             <Textarea
+              ref={textareaRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSubmit(e);
-                }
-              }}
-              placeholder="Escribe un mensaje o 'Crea un proyecto para...' (Enter para enviar, Shift+Enter para nueva línea)"
-              className="min-h-[44px] max-h-[140px] resize-none text-sm bg-zinc-900 border-zinc-700"
+              onKeyDown={handleKeyDown}
+              placeholder="Pregunta a Qwen Arquitecto... (Enter para enviar, Shift+Enter para salto de línea)"
+              className="min-h-[44px] max-h-[160px] text-xs bg-transparent border-0 resize-none focus-visible:ring-0 p-1.5 text-zinc-200 placeholder-zinc-500 font-sans"
               rows={1}
-              disabled={loading}
             />
-            <Button type="submit" disabled={loading || !input.trim()} className="h-11 px-4">
-              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+            <Button
+              size="sm"
+              onClick={() => handleSend()}
+              disabled={streaming || !input.trim()}
+              className="bg-emerald-500 hover:bg-emerald-400 text-black font-semibold h-8 px-3 rounded-xl shrink-0 transition disabled:opacity-40"
+            >
+              {streaming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
             </Button>
-          </form>
+          </div>
+          <div className="flex items-center justify-between text-[10px] text-zinc-500 px-1 pt-1.5 font-mono">
+            <span>Modelo: {selectedModel}</span>
+            <span>Sesión Playwright persistente</span>
+          </div>
         </div>
-      </div>
+      </main>
     </div>
   );
 }

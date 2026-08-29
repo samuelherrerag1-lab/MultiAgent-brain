@@ -1,6 +1,7 @@
 import { chromium, type BrowserContext, type Page } from "playwright";
 import path from "node:path";
 import os from "node:os";
+import fs from "node:fs";
 import { QWEN_SELECTORS, joinSelectors } from "./qwen.selector.ts";
 
 export type QwenChatOptions = {
@@ -56,6 +57,31 @@ class SimpleMutex {
 
 export const qwenMutex = new SimpleMutex();
 
+const USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
+
+const CHROME_ARGS = [
+  "--disable-blink-features=AutomationControlled",
+  "--no-first-run",
+  "--no-default-browser-check",
+  "--disable-infobars",
+  "--password-store=basic",
+];
+
+function cleanStaleLocks(userDataDir: string) {
+  try {
+    const lockFiles = ["SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"];
+    for (const f of lockFiles) {
+      const p = path.join(userDataDir, f);
+      if (fs.existsSync(p)) {
+        try {
+          fs.unlinkSync(p);
+        } catch {}
+      }
+    }
+  } catch {}
+}
+
 function getUserDataDir(opts?: QwenChatOptions): string {
   if (opts?.userDataDir) return path.resolve(opts.userDataDir);
   if (process.env.QWEN_USER_DATA_DIR) return path.resolve(process.env.QWEN_USER_DATA_DIR);
@@ -84,9 +110,13 @@ export async function getQwenContext(opts: QwenChatOptions = {}): Promise<{ ctx:
     }
   }
 
+  cleanStaleLocks(userDataDir);
+
   ctxSingleton = await chromium.launchPersistentContext(userDataDir, {
     headless,
-    args: ["--disable-blink-features=AutomationControlled", "--no-first-run", "--no-default-browser-check"],
+    userAgent: USER_AGENT,
+    ignoreDefaultArgs: ["--enable-automation"],
+    args: CHROME_ARGS,
     viewport: { width: 1280, height: 900 },
     locale: "es-ES",
   });
@@ -111,10 +141,15 @@ export async function closeQwenContext(): Promise<void> {
 export async function startQwenHeadfulLogin(opts: QwenChatOptions = {}): Promise<void> {
   await closeQwenContext();
   const userDataDir = getUserDataDir(opts);
+  cleanStaleLocks(userDataDir);
+
   ctxSingleton = await chromium.launchPersistentContext(userDataDir, {
     headless: false,
-    args: ["--disable-blink-features=AutomationControlled"],
+    userAgent: USER_AGENT,
+    ignoreDefaultArgs: ["--enable-automation"],
+    args: CHROME_ARGS,
     viewport: { width: 1280, height: 900 },
+    locale: "es-ES",
   });
   pageSingleton = ctxSingleton.pages()[0] || (await ctxSingleton.newPage());
   await pageSingleton.goto("https://chat.qwen.ai", { waitUntil: "domcontentloaded", timeout: 30_000 });
@@ -180,13 +215,20 @@ async function findTextarea(page: Page): Promise<ReturnType<Page["locator"]> | n
   return null;
 }
 
+export type ChunkMeta = {
+  type: "thought" | "response";
+  thought: string;
+  response: string;
+  isThinking: boolean;
+};
+
 /**
  * Consulta a Qwen Chat con streaming incremental mediante chunks.
  * Protegido por Mutex FIFO.
  */
 export async function consultArchitectChatStream(
   objective: string,
-  onChunk: (chunk: string) => void = () => {},
+  onChunk: (chunk: string, meta?: ChunkMeta) => void = () => {},
   opts: QwenChatOptions = {},
 ): Promise<string> {
   return qwenMutex.runExclusive(async () => {
@@ -246,65 +288,180 @@ export async function consultArchitectChatStream(
     await page.keyboard.press("Enter");
     await page.waitForTimeout(600);
 
-    // Loop de polling de streaming
+    // Loop de polling de streaming con separación de razonamiento y respuesta
     const start = Date.now();
-    let prevText = "";
-    const assistantLoc = page.locator(joinSelectors("assistant"));
+    let prevThought = "";
+    let prevResponse = "";
+    let prevFull = "";
+    let lastExtracted = { thought: "", response: "", full: "", isThinking: false };
     const stopLocator = page.locator(joinSelectors("stop"));
     const regenLocator = page.locator(joinSelectors("regenerate"));
 
     let stableCount = 0;
 
     while (Date.now() - start < timeoutMs) {
-      await page.waitForTimeout(350);
+      await page.waitForTimeout(300);
 
-      const count = await assistantLoc.count().catch(() => 0);
-      let currentText = "";
-      if (count > 0) {
-        const lastMsg = assistantLoc.last();
-        try {
-          currentText = (await lastMsg.innerText({ timeout: 1000 })).trim();
-        } catch {
-          currentText = (await lastMsg.textContent().catch(() => ""))?.trim() || "";
+      const extracted = await page.evaluate((assistantSelectors) => {
+        const doc = (globalThis as any).document;
+        const findLastElement = (selectors: string[]) => {
+          for (const sel of selectors) {
+            try {
+              const list = doc?.querySelectorAll(sel);
+              if (list && list.length > 0) return list[list.length - 1];
+            } catch {}
+          }
+          return null;
+        };
+
+        const lastMsg = findLastElement(assistantSelectors);
+        if (!lastMsg) {
+          return { thought: "", response: "", full: "", isThinking: false };
+        }
+
+        const thoughtSelectors = [
+          "details",
+          '[data-role="thought"]',
+          '[data-testid="thought-content"]',
+          ".thought-content",
+          ".reasoning-content",
+          'div[class*="thought"]',
+          'div[class*="reason"]',
+          'div[class*="think"]',
+        ];
+
+        let thoughtText = "";
+        let thoughtEl: any = null;
+        for (const tSel of thoughtSelectors) {
+          try {
+            const found = lastMsg.querySelector(tSel);
+            if (found) {
+              thoughtEl = found;
+              thoughtText = (found.textContent || "").trim();
+              break;
+            }
+          } catch {}
+        }
+
+        let responseText = "";
+        const fullText = (lastMsg.textContent || "").trim();
+
+        if (thoughtEl) {
+          try {
+            const clone = lastMsg.cloneNode(true) as any;
+            for (const tSel of thoughtSelectors) {
+              clone.querySelectorAll(tSel).forEach((el: any) => el.remove());
+            }
+            responseText = (clone.textContent || "").trim();
+          } catch {
+            responseText = fullText.replace(thoughtText, "").trim();
+          }
+        } else if (fullText.includes("<think>")) {
+          const thinkEnd = fullText.indexOf("</think>");
+          if (thinkEnd !== -1) {
+            thoughtText = fullText.slice(fullText.indexOf("<think>") + 7, thinkEnd).trim();
+            responseText = fullText.slice(thinkEnd + 8).trim();
+          } else {
+            thoughtText = fullText.slice(fullText.indexOf("<think>") + 7).trim();
+            responseText = "";
+          }
+        } else {
+          responseText = fullText;
+        }
+
+        const isThinking = thoughtText.length > 0 && responseText.length === 0;
+
+        return {
+          thought: thoughtText,
+          response: responseText,
+          full: fullText,
+          isThinking,
+        };
+      }, [...QWEN_SELECTORS.assistant]).catch(() => ({ thought: "", response: "", full: "", isThinking: false }));
+
+      lastExtracted = extracted;
+
+      if (extracted.isThinking) {
+        if (extracted.thought.length > prevThought.length) {
+          const delta = extracted.thought.slice(prevThought.length);
+          onChunk(delta, { type: "thought", thought: extracted.thought, response: extracted.response, isThinking: true });
+          prevThought = extracted.thought;
+          stableCount = 0;
+        } else if (extracted.thought.length > 0 && extracted.thought === prevThought) {
+          stableCount++;
+        }
+      } else {
+        if (extracted.response.length > prevResponse.length) {
+          const delta = extracted.response.slice(prevResponse.length);
+          onChunk(delta, { type: "response", thought: extracted.thought, response: extracted.response, isThinking: false });
+          prevResponse = extracted.response;
+          stableCount = 0;
+        } else if (extracted.full.length > prevFull.length) {
+          const delta = extracted.full.slice(prevFull.length);
+          onChunk(delta, { type: "response", thought: extracted.thought, response: extracted.full, isThinking: false });
+          prevResponse = extracted.full;
+          stableCount = 0;
+        } else if (prevResponse.length > 0 && (extracted.response === prevResponse || extracted.full === prevFull)) {
+          stableCount++;
         }
       }
-
-      if (currentText.length > prevText.length) {
-        const delta = currentText.slice(prevText.length);
-        onChunk(delta);
-        prevText = currentText;
-        stableCount = 0;
-      } else if (currentText.length > 0 && currentText === prevText) {
-        stableCount++;
-      }
+      prevFull = extracted.full;
 
       // Comprobar estado de finalización
       const stopVisible = (await stopLocator.count().catch(() => 0)) > 0
-        ? await stopLocator.first().isVisible({ timeout: 300 }).catch(() => false)
+        ? await stopLocator.first().isVisible({ timeout: 250 }).catch(() => false)
         : false;
 
-      if (!stopVisible && prevText.length > 0) {
-        const regenVisible = (await regenLocator.count().catch(() => 0)) > 0
-          ? await regenLocator.first().isVisible({ timeout: 300 }).catch(() => false)
-          : false;
+      if (!extracted.isThinking && (prevResponse.length > 0 || prevFull.length > 0)) {
+        if (!stopVisible) {
+          const regenVisible = (await regenLocator.count().catch(() => 0)) > 0
+            ? await regenLocator.first().isVisible({ timeout: 250 }).catch(() => false)
+            : false;
 
-        if (regenVisible || stableCount >= 4) {
-          break;
+          if (regenVisible || stableCount >= 10) {
+            break;
+          }
+        }
+      } else if (extracted.isThinking) {
+        // Mientras esté pensando, no abortar salvo que el botón de regenerar esté visible y estable por mucho tiempo
+        if (!stopVisible) {
+          const regenVisible = (await regenLocator.count().catch(() => 0)) > 0
+            ? await regenLocator.first().isVisible({ timeout: 250 }).catch(() => false)
+            : false;
+          if (regenVisible && stableCount >= 15) {
+            break;
+          }
         }
       }
     }
 
-    if (!prevText) {
+    let finalResult = "";
+    if (lastExtracted.response && lastExtracted.response.length > 0) {
+      if (lastExtracted.thought && lastExtracted.thought.length > 0) {
+        finalResult = `<details><summary>🧠 Razonamiento / Pensamiento</summary>\n\n${lastExtracted.thought}\n\n</details>\n\n${lastExtracted.response}`;
+      } else {
+        finalResult = lastExtracted.response;
+      }
+    } else if (lastExtracted.thought && lastExtracted.thought.length > 0) {
+      finalResult = lastExtracted.thought;
+    } else if (lastExtracted.full && lastExtracted.full.length > 0) {
+      finalResult = lastExtracted.full;
+    } else if (prevResponse || prevFull) {
+      finalResult = prevResponse || prevFull;
+    }
+
+    if (!finalResult) {
       throw new Error("QWEN_NO_RESPONSE: No se recibió respuesta de Qwen tras esperar streaming");
     }
 
-    if (prevText.length > maxChars) {
-      prevText = prevText.slice(0, maxChars - 3) + "...";
+    if (finalResult.length > maxChars) {
+      finalResult = finalResult.slice(0, maxChars - 3) + "...";
     }
 
-    return prevText;
+    return finalResult;
   });
 }
+
 
 /**
  * Consulta síncrona a Qwen Chat (compatibilidad).
@@ -317,29 +474,24 @@ export async function consultArchitectChat(
 }
 
 /**
- * Health check rápido: verifica que la sesión existe y textarea está visible.
+ * Health check rápido y no bloqueante: verifica que el perfil de usuario existe o la sesión está viva.
  */
 export async function healthCheckChat(opts: QwenChatOptions = {}): Promise<{ ok: boolean; latencyMs?: number; error?: string }> {
   const start = Date.now();
   try {
-    const { page } = await getQwenContext({ ...opts, headless: opts.headless ?? true });
-    const url = page.url();
-    if (!url.includes("chat.qwen.ai")) {
-      await page.goto("https://chat.qwen.ai", { waitUntil: "domcontentloaded", timeout: 15_000 });
-    }
-    await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {});
+    const userDataDir = getUserDataDir(opts);
 
-    const loginLocator = page.locator(joinSelectors("login")).first();
-    if ((await loginLocator.count()) > 0) {
-      const visible = await loginLocator.isVisible({ timeout: 2000 }).catch(() => false);
-      if (visible) return { ok: false, error: "QWEN_LOGIN_REQUIRED" };
+    if (ctxSingleton && pageSingleton && !pageSingleton.isClosed()) {
+      return { ok: true, latencyMs: Date.now() - start };
     }
 
-    const textarea = await findTextarea(page);
-    if (!textarea) return { ok: false, error: "QWEN_TEXTAREA_NOT_FOUND" };
+    if (fs.existsSync(userDataDir)) {
+      return { ok: true, latencyMs: Date.now() - start };
+    }
 
-    return { ok: true, latencyMs: Date.now() - start };
+    return { ok: false, error: "Perfil de Qwen no inicializado" };
   } catch (err) {
     return { ok: false, error: String(err).slice(0, 300) };
   }
 }
+
