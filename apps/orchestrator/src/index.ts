@@ -5,10 +5,17 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import { MissionSchema, MissionReportSchema } from "@cerebro/shared/protocols";
+import { MissionSchema, MissionReportSchema, type Mission } from "@cerebro/shared/protocols";
 import { getDb } from "./db/client.ts";
-import { missions, missionReports } from "./db/schema.ts";
+import { missions, missionReports, decisions } from "./db/schema.ts";
 import { eq, desc } from "drizzle-orm";
+import { route } from "./router/task-router.ts";
+import { Supervisor } from "./router/supervisor.ts";
+import { scanMissionForBlockedCommands, qualityGate } from "./governance/guard.ts";
+import { opencodeAdapter } from "./adapters/opencode.ts";
+import { deepSeekAdapter } from "./adapters/deepseek.ts";
+import { qwenAdapter } from "./bridges/qwen.ts";
+import type { AdapterId } from "@cerebro/shared/protocols";
 
 // ---------------------------------------------------------------------------
 // App
@@ -31,7 +38,86 @@ app.get("/api/health", (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// Missions — CRUD básico (FASE 1, sin Router/Supervisor aún)
+// Router + Supervisor + Governance (FASE 5)
+// ---------------------------------------------------------------------------
+
+const adapters: Record<AdapterId, any> = {
+  opencode: opencodeAdapter,
+  dsh: deepSeekAdapter,
+  qwen: qwenAdapter,
+};
+
+function getSupervisor() {
+  return new Supervisor({ adapters });
+}
+
+async function persistDecision(missionId: string, report: any) {
+  try {
+    if (!report.decisions?.length) return;
+    const { db } = await getDb();
+    for (const d of report.decisions) {
+      await db.insert(decisions).values({
+        id: crypto.randomUUID(),
+        missionId,
+        decision: d.decision,
+        rationale: d.rationale,
+      });
+    }
+  } catch (err) {
+    console.warn("[persistDecision]", err);
+  }
+}
+
+async function executeMissionInBackground(mission: Mission) {
+  const { db } = await getDb();
+  // Marcar como running
+  await db.update(missions).set({ status: "running", updatedAt: new Date() }).where(eq(missions.id, mission.missionId));
+
+  const supervisor = getSupervisor();
+  const result = await supervisor.run(mission);
+
+  // Persistir reporte
+  const report = result.report;
+  await db
+    .insert(missionReports)
+    .values({
+      id: report.missionId,
+      missionId: report.missionId,
+      status: report.status,
+      adapter: report.adapter,
+      summary: report.summary,
+      artifacts: report.artifacts as any,
+      testResults: report.testResults as any,
+      decisions: report.decisions as any,
+      traceId: report.traceId,
+      durationMs: report.durationMs,
+      error: report.error as any,
+      nextActions: report.nextActions as any,
+    } as any)
+    .onConflictDoUpdate({
+      target: missionReports.id,
+      set: {
+        status: report.status,
+        adapter: report.adapter,
+        summary: report.summary,
+        artifacts: report.artifacts as any,
+        testResults: report.testResults as any,
+        decisions: report.decisions as any,
+        durationMs: report.durationMs,
+        error: report.error as any,
+        nextActions: report.nextActions as any,
+      } as any,
+    });
+
+  const finalStatus = report.status === "success" ? "success" : report.status === "failed" ? "failed" : report.status;
+  await db.update(missions).set({ status: finalStatus, updatedAt: new Date(), adapter: report.adapter }).where(eq(missions.id, mission.missionId));
+
+  await persistDecision(mission.missionId, report);
+  console.log(`[executeMission] ${mission.missionId} → ${report.status} via ${report.adapter} (${result.iterations} iter, escalated=${result.escalated})`);
+}
+
+// ---------------------------------------------------------------------------
+// Missions — CRUD + Router/Supervisor (FASE 5)
 // ---------------------------------------------------------------------------
 
 // Schema para crear misión (sin missionId/createdAt, los genera el servidor)
@@ -76,6 +162,41 @@ app.post("/api/missions", zValidator("json", CreateMissionSchema), async (c) => 
     attempt: body.attempt ?? 1,
   });
 
+  // Governance: scan bloqueados
+  const blocked = scanMissionForBlockedCommands(mission);
+  if (blocked.blocked) {
+    // Sin aprobación, marcar needs_review y no ejecutar
+    const force = c.req.query("force") === "true" || c.req.header("x-approve-blocked") === "true";
+    if (!force) {
+      try {
+        const { db } = await getDb();
+        await db.insert(missions).values({
+          id: mission.missionId,
+          type: mission.type,
+          complexity: mission.complexity,
+          title: mission.title,
+          prompt: mission.prompt,
+          status: "needs_review",
+          workspaceRepo: mission.workspace.repo,
+          workspaceBranch: mission.workspace.branch,
+          worktreePath: mission.workspace.worktree,
+          baseCommit: mission.workspace.baseCommit,
+          contextFiles: mission.contextFiles,
+          acceptanceCriteria: mission.acceptanceCriteria,
+          toolsAllowed: mission.toolsAllowed,
+          priority: mission.priority,
+          timeoutMs: mission.timeoutMs,
+          traceId: mission.traceId,
+          attempt: mission.attempt,
+          adapter: null,
+        });
+      } catch {}
+      return c.json({ error: `Bloqueado por gobernanza: ${blocked.pattern}`, blocked: true, mission }, 403);
+    }
+  }
+
+  const decision = route(mission);
+
   try {
     const { db } = await getDb();
     await db.insert(missions).values({
@@ -96,15 +217,96 @@ app.post("/api/missions", zValidator("json", CreateMissionSchema), async (c) => 
       timeoutMs: mission.timeoutMs,
       traceId: mission.traceId,
       attempt: mission.attempt,
-      adapter: null,
+      adapter: decision.adapter,
     });
 
-    // SSE: emitir evento (en FASE 5 se conectará a Supervisor)
-    // Por ahora solo guardamos en PG, el polling del Kanban lo lee.
+    // Ejecutar en background si ?execute != false
+    const shouldExecute = c.req.query("execute") !== "false";
+    if (shouldExecute) {
+      // No esperar — background
+      executeMissionInBackground(mission).catch((e) => console.error("[executeMissionInBackground]", e));
+      // Marcar running inmediatamente para SSE
+      await db.update(missions).set({ status: "running", updatedAt: new Date() }).where(eq(missions.id, mission.missionId));
+    }
 
-    return c.json({ mission }, 201);
+    return c.json({ mission, route: decision }, 201);
   } catch (err) {
     console.error("[POST /api/missions]", err);
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Ejecutar misión existente manualmente
+app.post("/api/missions/:id/run", async (c) => {
+  const id = c.req.param("id");
+  try {
+    const { db } = await getDb();
+    const [row] = await db.select().from(missions).where(eq(missions.id, id)).limit(1);
+    if (!row) return c.json({ error: "Mission not found" }, 404);
+    if (row.status === "running") return c.json({ error: "Mission already running" }, 409);
+
+    // Reconstruir Mission desde row
+    const mission: Mission = {
+      missionId: row.id,
+      type: row.type as any,
+      complexity: row.complexity as any,
+      title: row.title,
+      prompt: row.prompt,
+      workspace: { repo: row.workspaceRepo, branch: row.workspaceBranch || undefined, worktree: row.worktreePath || undefined, baseCommit: row.baseCommit || undefined },
+      contextFiles: row.contextFiles || undefined,
+      acceptanceCriteria: row.acceptanceCriteria,
+      toolsAllowed: row.toolsAllowed || undefined,
+      priority: row.priority as any,
+      timeoutMs: row.timeoutMs,
+      traceId: row.traceId || undefined,
+      createdAt: row.createdAt ? new Date(row.createdAt).getTime() : Date.now(),
+      attempt: row.attempt,
+    };
+
+    const blocked = scanMissionForBlockedCommands(mission);
+    if (blocked.blocked) {
+      return c.json({ error: `Bloqueado: ${blocked.pattern}`, blocked: true }, 403);
+    }
+
+    await db.update(missions).set({ status: "running", updatedAt: new Date() }).where(eq(missions.id, id));
+    executeMissionInBackground(mission).catch((e) => console.error("[run]", e));
+    return c.json({ ok: true, missionId: id, status: "running" });
+  } catch (err) {
+    console.error(`[POST /api/missions/${id}/run]`, err);
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Aprobar misión bloqueada (needs_review → pending + ejecutar)
+app.post("/api/missions/:id/approve", async (c) => {
+  const id = c.req.param("id");
+  try {
+    const { db } = await getDb();
+    const [row] = await db.select().from(missions).where(eq(missions.id, id)).limit(1);
+    if (!row) return c.json({ error: "Mission not found" }, 404);
+    if (row.status !== "needs_review") return c.json({ error: `No está en needs_review (actual: ${row.status})` }, 400);
+
+    await db.update(missions).set({ status: "pending", updatedAt: new Date() }).where(eq(missions.id, id));
+
+    const mission: Mission = {
+      missionId: row.id,
+      type: row.type as any,
+      complexity: row.complexity as any,
+      title: row.title,
+      prompt: row.prompt,
+      workspace: { repo: row.workspaceRepo },
+      acceptanceCriteria: row.acceptanceCriteria,
+      priority: row.priority as any,
+      timeoutMs: row.timeoutMs,
+      createdAt: row.createdAt ? new Date(row.createdAt).getTime() : Date.now(),
+      attempt: row.attempt,
+    };
+
+    await db.update(missions).set({ status: "running", updatedAt: new Date() }).where(eq(missions.id, id));
+    executeMissionInBackground(mission).catch((e) => console.error("[approve]", e));
+    return c.json({ ok: true, status: "running" });
+  } catch (err) {
+    console.error(`[POST /api/missions/${id}/approve]`, err);
     return c.json({ error: String(err) }, 500);
   }
 });
