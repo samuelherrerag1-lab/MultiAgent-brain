@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableDelayedExpansion
 chcp 65001 >nul
-title Cerebro de Agentes — Iniciando...
+title Cerebro de Agentes - Iniciando...
 
 :: ============================================================
 :: Cerebro de Agentes — Levanta todo el entorno correctamente
@@ -118,10 +118,10 @@ echo.
 :: Cerramos solo si el usuario quiere — no forzamos
 
 echo [Cerebro] Iniciando Orquestador en http://localhost:3001 ...
-start "Cerebro Orquestador — Hono 3001" /D "%ROOT%" cmd /k pnpm --filter "@cerebro/orchestrator" dev
+start "Cerebro-Orquestador" /D "%ROOT%" cmd /k pnpm --filter "@cerebro/orchestrator" dev
 
 echo [Cerebro] Iniciando Web en http://localhost:3000 ...
-start "Cerebro Web — Next 3000" /D "%ROOT%" cmd /k pnpm --filter "@cerebro/web" dev
+start "Cerebro-Web" /D "%ROOT%" cmd /k pnpm --filter "@cerebro/web" dev
 
 echo.
 echo Esperando 6s para que ambos levanten...
