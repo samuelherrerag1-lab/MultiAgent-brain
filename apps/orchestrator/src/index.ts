@@ -71,50 +71,59 @@ async function persistDecision(missionId: string, report: any) {
 
 async function executeMissionInBackground(mission: Mission) {
   const { db } = await getDb();
-  // Marcar como running
   await db.update(missions).set({ status: "running", updatedAt: new Date() }).where(eq(missions.id, mission.missionId));
 
   const supervisor = getSupervisor();
-  const result = await supervisor.run(mission);
+  let report: any;
 
-  // Persistir reporte
-  const report = result.report;
-  await db
-    .insert(missionReports)
-    .values({
-      id: report.missionId,
-      missionId: report.missionId,
-      status: report.status,
-      adapter: report.adapter,
-      summary: report.summary,
-      artifacts: report.artifacts as any,
-      testResults: report.testResults as any,
-      decisions: report.decisions as any,
-      traceId: report.traceId,
-      durationMs: report.durationMs,
-      error: report.error as any,
-      nextActions: report.nextActions as any,
-    } as any)
-    .onConflictDoUpdate({
-      target: missionReports.id,
-      set: {
+  try {
+    const result = await supervisor.run(mission);
+    report = result.report;
+
+    await db
+      .insert(missionReports)
+      .values({
+        id: report.missionId,
+        missionId: report.missionId,
         status: report.status,
         adapter: report.adapter,
         summary: report.summary,
         artifacts: report.artifacts as any,
         testResults: report.testResults as any,
         decisions: report.decisions as any,
+        traceId: report.traceId,
         durationMs: report.durationMs,
         error: report.error as any,
         nextActions: report.nextActions as any,
-      } as any,
-    });
+      } as any)
+      .onConflictDoUpdate({
+        target: missionReports.id,
+        set: {
+          status: report.status,
+          adapter: report.adapter,
+          summary: report.summary,
+          artifacts: report.artifacts as any,
+          testResults: report.testResults as any,
+          decisions: report.decisions as any,
+          durationMs: report.durationMs,
+          error: report.error as any,
+          nextActions: report.nextActions as any,
+        } as any,
+      });
 
-  const finalStatus = report.status === "success" ? "success" : report.status === "failed" ? "failed" : report.status;
-  await db.update(missions).set({ status: finalStatus, updatedAt: new Date(), adapter: report.adapter }).where(eq(missions.id, mission.missionId));
+    const finalStatus = report.status === "success" ? "success" : report.status === "failed" ? "failed" : report.status;
+    await db.update(missions).set({ status: finalStatus, updatedAt: new Date(), adapter: report.adapter }).where(eq(missions.id, mission.missionId));
 
-  await persistDecision(mission.missionId, report);
-  console.log(`[executeMission] ${mission.missionId} → ${report.status} via ${report.adapter} (${result.iterations} iter, escalated=${result.escalated})`);
+    await persistDecision(mission.missionId, report);
+    console.log(`[executeMission] ${mission.missionId} -> ${report.status} via ${report.adapter} (${result.iterations} iter, escalated=${result.escalated})`);
+  } catch (err) {
+    //确保错误时任务状态为failed，不会在dashboard卡在running
+    try {
+      await db.update(missions).set({ status: "failed", updatedAt: new Date() }).where(eq(missions.id, mission.missionId));
+    } catch {}
+    console.error("[executeMissionInBackground] error:", err);
+    throw err;
+  }
 }
 
 setMissionExecutor(executeMissionInBackground);
@@ -169,33 +178,30 @@ app.post("/api/missions", zValidator("json", CreateMissionSchema), async (c) => 
   const blocked = scanMissionForBlockedCommands(mission);
   if (blocked.blocked) {
     // Sin aprobación, marcar needs_review y no ejecutar
-    const force = c.req.query("force") === "true" || c.req.header("x-approve-blocked") === "true";
-    if (!force) {
-      try {
-        const { db } = await getDb();
-        await db.insert(missions).values({
-          id: mission.missionId,
-          type: mission.type,
-          complexity: mission.complexity,
-          title: mission.title,
-          prompt: mission.prompt,
-          status: "needs_review",
-          workspaceRepo: mission.workspace.repo,
-          workspaceBranch: mission.workspace.branch,
-          worktreePath: mission.workspace.worktree,
-          baseCommit: mission.workspace.baseCommit,
-          contextFiles: mission.contextFiles,
-          acceptanceCriteria: mission.acceptanceCriteria,
-          toolsAllowed: mission.toolsAllowed,
-          priority: mission.priority,
-          timeoutMs: mission.timeoutMs,
-          traceId: mission.traceId,
-          attempt: mission.attempt,
-          adapter: null,
-        });
-      } catch {}
-      return c.json({ error: `Bloqueado por gobernanza: ${blocked.pattern}`, blocked: true, mission }, 403);
-    }
+    try {
+      const { db } = await getDb();
+      await db.insert(missions).values({
+        id: mission.missionId,
+        type: mission.type,
+        complexity: mission.complexity,
+        title: mission.title,
+        prompt: mission.prompt,
+        status: "needs_review",
+        workspaceRepo: mission.workspace.repo,
+        workspaceBranch: mission.workspace.branch,
+        worktreePath: mission.workspace.worktree,
+        baseCommit: mission.workspace.baseCommit,
+        contextFiles: mission.contextFiles,
+        acceptanceCriteria: mission.acceptanceCriteria,
+        toolsAllowed: mission.toolsAllowed,
+        priority: mission.priority,
+        timeoutMs: mission.timeoutMs,
+        traceId: mission.traceId,
+        attempt: mission.attempt,
+        adapter: null,
+      });
+    } catch {}
+    return c.json({ error: `Bloqueado por gobernanza: ${blocked.pattern}`, blocked: true, mission, approvalRequired: true }, 403);
   }
 
   const decision = route(mission);

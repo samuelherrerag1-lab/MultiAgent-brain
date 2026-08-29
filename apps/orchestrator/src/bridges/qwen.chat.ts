@@ -298,6 +298,8 @@ export async function consultArchitectChatStream(
     const regenLocator = page.locator(joinSelectors("regenerate"));
 
     let stableCount = 0;
+    let emptyPollCount = 0;
+    const MAX_EMPTY_POLLS = 30; // 30 * 300ms = 9s sin contenido nuevo
 
     while (Date.now() - start < timeoutMs) {
       await page.waitForTimeout(300);
@@ -356,13 +358,13 @@ export async function consultArchitectChatStream(
           } catch {
             responseText = fullText.replace(thoughtText, "").trim();
           }
-        } else if (fullText.includes("<think>")) {
-          const thinkEnd = fullText.indexOf("</think>");
+        } else if (fullText.includes("🤔")) {
+          const thinkEnd = fullText.indexOf("🤔");
           if (thinkEnd !== -1) {
-            thoughtText = fullText.slice(fullText.indexOf("<think>") + 7, thinkEnd).trim();
+            thoughtText = fullText.slice(fullText.indexOf("🤔") + 7, thinkEnd).trim();
             responseText = fullText.slice(thinkEnd + 8).trim();
           } else {
-            thoughtText = fullText.slice(fullText.indexOf("<think>") + 7).trim();
+            thoughtText = fullText.slice(fullText.indexOf("🤔") + 7).trim();
             responseText = "";
           }
         } else {
@@ -380,6 +382,16 @@ export async function consultArchitectChatStream(
       }, [...QWEN_SELECTORS.assistant]).catch(() => ({ thought: "", response: "", full: "", isThinking: false }));
 
       lastExtracted = extracted;
+
+      if (!extracted.full || extracted.full.length === 0) {
+        emptyPollCount++;
+        if (emptyPollCount > MAX_EMPTY_POLLS) {
+          console.warn("[qwen] No contenido del asistente tras", MAX_EMPTY_POLLS * 300, "ms. Deteniendo streaming.");
+          break;
+        }
+      } else {
+        emptyPollCount = 0;
+      }
 
       if (extracted.isThinking) {
         if (extracted.thought.length > prevThought.length) {
@@ -418,7 +430,8 @@ export async function consultArchitectChatStream(
             ? await regenLocator.first().isVisible({ timeout: 250 }).catch(() => false)
             : false;
 
-          if (regenVisible || stableCount >= 10) {
+          if (regenVisible || stableCount >= 25) {
+            console.log("[qwen] Streaming terminado: regenVisible=", regenVisible, "stableCount=", stableCount);
             break;
           }
         }
@@ -428,12 +441,15 @@ export async function consultArchitectChatStream(
           const regenVisible = (await regenLocator.count().catch(() => 0)) > 0
             ? await regenLocator.first().isVisible({ timeout: 250 }).catch(() => false)
             : false;
-          if (regenVisible && stableCount >= 15) {
+          if (regenVisible && stableCount >= 20) {
+            console.log("[qwen] Streaming terminado (thinking): regenVisible=", regenVisible, "stableCount=", stableCount);
             break;
           }
         }
       }
     }
+
+    console.log("[qwen] Resultado final: thoughtLen=", lastExtracted.thought?.length, "responseLen=", lastExtracted.response?.length, "fullLen=", lastExtracted.full?.length, "prevResponseLen=", prevResponse?.length, "prevFullLen=", prevFull?.length);
 
     let finalResult = "";
     if (lastExtracted.response && lastExtracted.response.length > 0) {

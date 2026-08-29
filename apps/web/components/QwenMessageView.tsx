@@ -24,29 +24,41 @@ interface QwenMessageViewProps {
 }
 
 /**
- * Extrae el bloque de razonamiento de <details> o <think> si existe en el texto
+ * Extrae el bloque de razonamiento del texto.
+ * - Para mensajes en streaming: content=respuesta acumulada, propThought=thought acumulado (ya separados).
+ * - Para mensajes históricos: content es el texto completo; se buscan marcadores <details>, 🤔, etc.
  */
-function parseThoughtAndResponse(content: string, propThought?: string) {
-  let thought = propThought || "";
+function parseThoughtAndResponse(content: string, propThought?: string, isStreaming?: boolean) {
+  // Para streaming: thought y response ya vienen separados por el backend
+  if (isStreaming) {
+    return { thought: propThought || "", response: content || "" };
+  }
+
+  // Para mensajes históricos: parsear el contenido buscando marcadores
+  let thought = "";
   let response = content;
 
-  // Si viene en formato <details><summary>...</summary>...</details>
+  // 1) Formato <details><summary>...</summary>...</details>
   const detailsMatch = content.match(/<details[^>]*>[\s\S]*?<summary[^>]*>([\s\S]*?)<\/summary>([\s\S]*?)<\/details>/i);
   if (detailsMatch) {
     thought = (detailsMatch[2] || "").trim();
     response = content.replace(detailsMatch[0], "").trim();
-  } else if (content.includes("<think>")) {
-    const thinkEnd = content.indexOf("</think>");
-    if (thinkEnd !== -1) {
-      thought = content.slice(content.indexOf("<think>") + 7, thinkEnd).trim();
-      response = content.slice(thinkEnd + 8).trim();
-    } else {
-      thought = content.slice(content.indexOf("<think>") + 7).trim();
-      response = "";
+    return { thought, response };
+  }
+
+  // 2) Marcadores "🤔..." -> "...🤔"
+  if (content.includes("🤔")) {
+    const startIdx = content.indexOf("🤔");
+    const endIdx = content.indexOf("🤔", startIdx + 1);
+    if (startIdx !== -1 && endIdx !== -1) {
+      thought = content.slice(startIdx + 7, endIdx).trim();
+      response = content.slice(endIdx + 8).trim();
+      return { thought, response };
     }
   }
 
-  return { thought, response };
+  // 3) Sin marcadores: todo el contenido es la respuesta
+  return { thought: "", response: content };
 }
 
 /**
@@ -113,8 +125,8 @@ export function QwenMessageView({
   onQuickReply,
 }: QwenMessageViewProps) {
   const { thought, response } = useMemo(
-    () => parseThoughtAndResponse(content, propThought),
-    [content, propThought],
+    () => parseThoughtAndResponse(content, propThought, isStreaming),
+    [content, propThought, isStreaming],
   );
 
   const [thoughtOpen, setThoughtOpen] = useState(false);
