@@ -102,6 +102,28 @@ export async function getDb(): Promise<{ db: DbInstance; type: DbType }> {
         embedding TEXT NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      CREATE TABLE IF NOT EXISTS qwen_conversations (
+        id VARCHAR(36) PRIMARY KEY,
+        title VARCHAR(120) NOT NULL,
+        model_label VARCHAR(40) NOT NULL DEFAULT 'QwenMax-3.8',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS qwen_messages (
+        id VARCHAR(36) PRIMARY KEY,
+        conversation_id VARCHAR(36) NOT NULL REFERENCES qwen_conversations(id) ON DELETE CASCADE,
+        role VARCHAR(20) NOT NULL,
+        content TEXT NOT NULL,
+        model_label VARCHAR(40),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS qwen_memory (
+        id VARCHAR(36) PRIMARY KEY,
+        conversation_id VARCHAR(36) NOT NULL REFERENCES qwen_conversations(id) ON DELETE CASCADE,
+        summary TEXT NOT NULL,
+        embedding TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
     `);
     dbInstance = drizzlePglite(pgliteInstance, { schema });
     dbType = "pglite";
@@ -177,6 +199,28 @@ export async function getDb(): Promise<{ db: DbInstance; type: DbType }> {
         mission_id VARCHAR(36) REFERENCES missions(id) ON DELETE CASCADE,
         content TEXT NOT NULL,
         embedding TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS qwen_conversations (
+        id VARCHAR(36) PRIMARY KEY,
+        title VARCHAR(120) NOT NULL,
+        model_label VARCHAR(40) NOT NULL DEFAULT 'QwenMax-3.8',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS qwen_messages (
+        id VARCHAR(36) PRIMARY KEY,
+        conversation_id VARCHAR(36) NOT NULL REFERENCES qwen_conversations(id) ON DELETE CASCADE,
+        role VARCHAR(20) NOT NULL,
+        content TEXT NOT NULL,
+        model_label VARCHAR(40),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS qwen_memory (
+        id VARCHAR(36) PRIMARY KEY,
+        conversation_id VARCHAR(36) NOT NULL REFERENCES qwen_conversations(id) ON DELETE CASCADE,
+        summary TEXT NOT NULL,
+        embedding TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
     `);
@@ -259,6 +303,28 @@ export async function createTestDb(): Promise<{ db: DbInstance; pglite: PGlite }
       mission_id VARCHAR(36) REFERENCES missions(id) ON DELETE CASCADE,
       content TEXT NOT NULL,
       embedding TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS qwen_conversations (
+      id VARCHAR(36) PRIMARY KEY,
+      title VARCHAR(120) NOT NULL,
+      model_label VARCHAR(40) NOT NULL DEFAULT 'QwenMax-3.8',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS qwen_messages (
+      id VARCHAR(36) PRIMARY KEY,
+      conversation_id VARCHAR(36) NOT NULL REFERENCES qwen_conversations(id) ON DELETE CASCADE,
+      role VARCHAR(20) NOT NULL,
+      content TEXT NOT NULL,
+      model_label VARCHAR(40),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS qwen_memory (
+      id VARCHAR(36) PRIMARY KEY,
+      conversation_id VARCHAR(36) NOT NULL REFERENCES qwen_conversations(id) ON DELETE CASCADE,
+      summary TEXT NOT NULL,
+      embedding TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);

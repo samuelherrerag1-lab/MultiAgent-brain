@@ -65,6 +65,24 @@ export const QWEN_SELECTORS = {
     'li:has-text("QwenMax-3.8")',
   ],
 
+  modelOptionMax: [
+    'text="Qwen-Max"',
+    'text="Qwen Max"',
+    'li:has-text("Qwen-Max")',
+  ],
+
+  modelOptionTurbo: [
+    'text="Qwen-Turbo"',
+    'text="Qwen Turbo"',
+    'li:has-text("Qwen-Turbo")',
+  ],
+
+  modelOptionPlus: [
+    'text="Qwen-Plus"',
+    'text="Qwen Plus"',
+    'li:has-text("Qwen-Plus")',
+  ],
+
   /** Indicadores de login requerido */
   login: [
     'button:has-text("Log in")',

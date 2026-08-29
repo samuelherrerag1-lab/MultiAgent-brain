@@ -95,3 +95,15 @@ export function subscribeMissionStream(
 
   return () => es.close();
 }
+
+export async function approveMission(id: string): Promise<{ ok: boolean; status?: string; error?: string }> {
+  const res = await fetch(`${ORCHESTRATOR_URL}/api/missions/${id}/approve`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || `approveMission ${res.status}`);
+  }
+  return res.json();
+}
+

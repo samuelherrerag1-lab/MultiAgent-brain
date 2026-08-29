@@ -35,6 +35,7 @@ for /f "tokens=*" %%v in ('node --version') do echo   Node %%v OK
 
 echo [2/7] Verificando pnpm...
 where pnpm >nul 2>&1
+if errorlevel 1 where pnpm.cmd >nul 2>&1
 if errorlevel 1 (
   echo [WARN] pnpm no encontrado, habilitando via corepack...
   call corepack enable pnpm
@@ -91,8 +92,8 @@ if not exist "node_modules" (
   echo   node_modules OK
 )
 
-:: Playwright Chromium si falta
-pnpm --filter @cerebro/orchestrator exec playwright install chromium >nul 2>&1
+:: Playwright Chromium si falta (filtro con comillas para evitar @ en cmd)
+pnpm --filter "@cerebro/orchestrator" exec playwright install chromium >nul 2>&1
 if errorlevel 1 echo [WARN] playwright install chromium falló (puede ya estar instalado)
 
 :: DB: Docker compose si disponible y DATABASE_URL es local
@@ -117,10 +118,10 @@ echo.
 :: Cerramos solo si el usuario quiere — no forzamos
 
 echo [Cerebro] Iniciando Orquestador en http://localhost:3001 ...
-start "Cerebro Orquestador — Hono 3001" cmd /k "cd /d "%ROOT%" && pnpm --filter @cerebro/orchestrator dev"
+start "Cerebro Orquestador — Hono 3001" /D "%ROOT%" cmd /k pnpm --filter "@cerebro/orchestrator" dev
 
 echo [Cerebro] Iniciando Web en http://localhost:3000 ...
-start "Cerebro Web — Next 3000" cmd /k "cd /d "%ROOT%" && pnpm --filter @cerebro/web dev"
+start "Cerebro Web — Next 3000" /D "%ROOT%" cmd /k pnpm --filter "@cerebro/web" dev
 
 echo.
 echo Esperando 6s para que ambos levanten...

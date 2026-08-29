@@ -73,9 +73,9 @@ if (-not (Test-Path "node_modules")) {
   if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] pnpm install falló" -ForegroundColor Red; pause; exit 1 }
 } else { Write-Host "  node_modules OK" -ForegroundColor Green }
 
-# Playwright install si falta
+# Playwright install si falta (filtro con comillas por @ en PowerShell)
 Write-Host "Verificando Chromium..." -ForegroundColor Yellow
-pnpm --filter @cerebro/orchestrator exec playwright install chromium 2>$null
+pnpm --filter "@cerebro/orchestrator" exec playwright install chromium 2>$null
 if ($LASTEXITCODE -ne 0) { Write-Host "  [WARN] playwright install pudo fallar (puede ya estar)" -ForegroundColor Yellow } else { Write-Host "  Chromium OK" -ForegroundColor Green }
 
 # DB: docker compose si DATABASE_URL es local
@@ -96,10 +96,10 @@ Write-Host "==============================================" -ForegroundColor Whi
 Write-Host ""
 
 Write-Host "[Cerebro] Iniciando Orquestador en http://localhost:3001 ..." -ForegroundColor Cyan
-Start-Process -FilePath "cmd.exe" -ArgumentList "/k", "cd /d `"$Root`" && pnpm --filter @cerebro/orchestrator dev" -WindowStyle Normal
+Start-Process -FilePath "cmd.exe" -ArgumentList "/k", "pnpm --filter `"@cerebro/orchestrator`" dev" -WorkingDirectory $Root -WindowStyle Normal
 
 Write-Host "[Cerebro] Iniciando Web en http://localhost:3000 ..." -ForegroundColor Cyan
-Start-Process -FilePath "cmd.exe" -ArgumentList "/k", "cd /d `"$Root`" && pnpm --filter @cerebro/web dev" -WindowStyle Normal
+Start-Process -FilePath "cmd.exe" -ArgumentList "/k", "pnpm --filter `"@cerebro/web`" dev" -WorkingDirectory $Root -WindowStyle Normal
 
 Write-Host ""
 Write-Host "Esperando 6s..." -ForegroundColor Yellow

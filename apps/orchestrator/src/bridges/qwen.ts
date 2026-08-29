@@ -1,11 +1,18 @@
 import type { Mission, MissionReport } from "@cerebro/shared/protocols";
 import type { Adapter } from "../adapters/types.ts";
 import { buildPrompt } from "../adapters/prompt.ts";
-import { consultArchitectChat, healthCheckChat, closeQwenContext, type QwenChatOptions } from "./qwen.chat.ts";
+import {
+  consultArchitectChat,
+  consultArchitectChatStream,
+  healthCheckChat,
+  closeQwenContext,
+  startQwenHeadfulLogin,
+  type QwenChatOptions,
+} from "./qwen.chat.ts";
 import { detectArtifacts } from "../adapters/opencode.ts";
 
 // Re-export para uso directo
-export { consultArchitectChat, healthCheckChat, closeQwenContext };
+export { consultArchitectChat, consultArchitectChatStream, healthCheckChat, closeQwenContext, startQwenHeadfulLogin };
 export type { QwenChatOptions };
 
 /**

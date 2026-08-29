@@ -24,7 +24,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 href="/"
                 className="rounded-md px-3 py-2 text-sm text-zinc-400 hover:text-white hover:bg-zinc-900 transition"
               >
-                Chat
+                Misiones
+              </Link>
+              <Link
+                href="/qwen-chat"
+                className="rounded-md px-3 py-2 text-sm text-white bg-zinc-900 border border-zinc-800"
+              >
+                Qwen Chat
               </Link>
               <Link
                 href="/dashboard"

@@ -15,6 +15,7 @@ import { scanMissionForBlockedCommands, qualityGate } from "./governance/guard.t
 import { opencodeAdapter } from "./adapters/opencode.ts";
 import { deepSeekAdapter } from "./adapters/deepseek.ts";
 import { qwenAdapter } from "./bridges/qwen.ts";
+import { qwenChatRouter, setMissionExecutor } from "./routes/qwen-chat.ts";
 import type { AdapterId } from "@cerebro/shared/protocols";
 
 // ---------------------------------------------------------------------------
@@ -115,6 +116,8 @@ async function executeMissionInBackground(mission: Mission) {
   await persistDecision(mission.missionId, report);
   console.log(`[executeMission] ${mission.missionId} → ${report.status} via ${report.adapter} (${result.iterations} iter, escalated=${result.escalated})`);
 }
+
+setMissionExecutor(executeMissionInBackground);
 
 // ---------------------------------------------------------------------------
 // Missions — CRUD + Router/Supervisor (FASE 5)
@@ -386,7 +389,7 @@ app.get("/api/missions/:id/stream", async (c) => {
 
       send("connected", { missionId: id, at: Date.now() });
 
-      // Poll cada 1s durante 30s (FASE 1 simple; FASE 6 usará pub/sub)
+      // Poll cada 1s durante hasta 300s (5min)
       let ticks = 0;
       const interval = setInterval(async () => {
         ticks++;
@@ -395,12 +398,12 @@ app.get("/api/missions/:id/stream", async (c) => {
           const [mission] = await db.select().from(missions).where(eq(missions.id, id)).limit(1);
           if (mission) {
             send("mission:update", mission);
-            if (["success", "failed", "aborted"].includes(mission.status) || ticks > 30) {
+            if (["success", "failed", "aborted"].includes(mission.status) || ticks >= 300) {
               clearInterval(interval);
               send("done", { status: mission.status });
               controller.close();
             }
-          } else if (ticks > 5) {
+          } else if (ticks > 10) {
             clearInterval(interval);
             send("error", { message: "Mission not found" });
             controller.close();
@@ -428,6 +431,9 @@ app.get("/api/missions/:id/stream", async (c) => {
     },
   });
 });
+
+// Qwen Chat Asistente (FASE 6b)
+app.route("/api/qwen", qwenChatRouter);
 
 // 404
 app.notFound((c) => c.json({ error: "Not found", path: c.req.path }, 404));

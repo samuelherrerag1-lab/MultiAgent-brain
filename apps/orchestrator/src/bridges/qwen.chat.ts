@@ -8,6 +8,7 @@ export type QwenChatOptions = {
   headless?: boolean;
   timeoutMs?: number;
   modelLabel?: string;
+  maxChars?: number;
 };
 
 const DEFAULT_TIMEOUT = 90_000;
@@ -15,6 +16,45 @@ const DEFAULT_MODEL_LABEL = "QwenMax-3.8";
 
 let ctxSingleton: BrowserContext | null = null;
 let pageSingleton: Page | null = null;
+
+/**
+ * Mutex FIFO simple para serializar llamadas concurrentes a la sesión Playwright
+ */
+class SimpleMutex {
+  private queue: Array<() => void> = [];
+  private locked = false;
+
+  async runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    await this.acquire();
+    try {
+      return await fn();
+    } finally {
+      this.release();
+    }
+  }
+
+  private acquire(): Promise<void> {
+    return new Promise((resolve) => {
+      if (!this.locked) {
+        this.locked = true;
+        resolve();
+      } else {
+        this.queue.push(resolve);
+      }
+    });
+  }
+
+  private release(): void {
+    const next = this.queue.shift();
+    if (next) {
+      next();
+    } else {
+      this.locked = false;
+    }
+  }
+}
+
+export const qwenMutex = new SimpleMutex();
 
 function getUserDataDir(opts?: QwenChatOptions): string {
   if (opts?.userDataDir) return path.resolve(opts.userDataDir);
@@ -65,29 +105,50 @@ export async function closeQwenContext(): Promise<void> {
   }
 }
 
+/**
+ * Lanza ventana headful para login interactivo
+ */
+export async function startQwenHeadfulLogin(opts: QwenChatOptions = {}): Promise<void> {
+  await closeQwenContext();
+  const userDataDir = getUserDataDir(opts);
+  ctxSingleton = await chromium.launchPersistentContext(userDataDir, {
+    headless: false,
+    args: ["--disable-blink-features=AutomationControlled"],
+    viewport: { width: 1280, height: 900 },
+  });
+  pageSingleton = ctxSingleton.pages()[0] || (await ctxSingleton.newPage());
+  await pageSingleton.goto("https://chat.qwen.ai", { waitUntil: "domcontentloaded", timeout: 30_000 });
+}
+
 async function trySelectModel(page: Page, modelLabel: string, timeoutMs: number): Promise<boolean> {
   try {
     const selector = page.locator(joinSelectors("modelSelector")).first();
     const count = await selector.count();
     if (count === 0) {
-      console.warn("[qwen] modelSelector no encontrado — asumiendo QwenMax-3.8 por defecto");
       return true;
     }
     await selector.click({ timeout: 5_000 });
-    await page.waitForTimeout(800);
+    await page.waitForTimeout(600);
 
-    // Intentar click en la opción QwenMax-3.8
-    for (const sel of QWEN_SELECTORS.modelOptionMax38) {
+    // Mapear selector según modelLabel
+    let optionSelectors: readonly string[] = QWEN_SELECTORS.modelOptionMax38;
+    const lower = modelLabel.toLowerCase();
+    if (lower.includes("turbo")) optionSelectors = QWEN_SELECTORS.modelOptionTurbo;
+    else if (lower.includes("plus")) optionSelectors = QWEN_SELECTORS.modelOptionPlus;
+    else if (lower.includes("max") && !lower.includes("3.8")) optionSelectors = QWEN_SELECTORS.modelOptionMax;
+
+    // Intentar click en la opción específica
+    for (const sel of optionSelectors) {
       const opt = page.locator(sel).first();
       try {
         if ((await opt.count()) > 0) {
           await opt.click({ timeout: 3_000 });
-          await page.waitForTimeout(600);
-          console.log(`[qwen] modelo seleccionado via selector: ${sel}`);
+          await page.waitForTimeout(500);
           return true;
         }
       } catch {}
     }
+
     // Fallback: buscar por texto que contenga modelLabel
     const byText = page.getByText(modelLabel, { exact: false }).first();
     try {
@@ -99,7 +160,6 @@ async function trySelectModel(page: Page, modelLabel: string, timeoutMs: number)
 
     // Si no se encontró opción, cerrar dropdown con Escape y asumir default
     await page.keyboard.press("Escape");
-    console.warn(`[qwen] opción ${modelLabel} no encontrada — usando modelo por defecto`);
     return true;
   } catch (err) {
     console.warn("[qwen] trySelectModel error:", String(err).slice(0, 200));
@@ -120,160 +180,140 @@ async function findTextarea(page: Page): Promise<ReturnType<Page["locator"]> | n
   return null;
 }
 
-async function waitForStreamingEnd(page: Page, timeoutMs: number): Promise<void> {
-  const start = Date.now();
+/**
+ * Consulta a Qwen Chat con streaming incremental mediante chunks.
+ * Protegido por Mutex FIFO.
+ */
+export async function consultArchitectChatStream(
+  objective: string,
+  onChunk: (chunk: string) => void = () => {},
+  opts: QwenChatOptions = {},
+): Promise<string> {
+  return qwenMutex.runExclusive(async () => {
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT;
+    const modelLabel = opts.modelLabel ?? DEFAULT_MODEL_LABEL;
+    const maxChars = opts.maxChars ?? 32_000;
+    const { page } = await getQwenContext(opts);
 
-  // Estrategia 1: esperar que botón Stop desaparezca y Regenerate aparezca
-  try {
-    // Esperar a que Stop desaparezca (streaming terminó)
+    // Navegar a chat.qwen.ai si no estamos allí
+    const url = page.url();
+    if (!url.includes("chat.qwen.ai")) {
+      await page.goto("https://chat.qwen.ai", { waitUntil: "domcontentloaded", timeout: 30_000 });
+    } else {
+      await page.waitForLoadState("domcontentloaded").catch(() => {});
+    }
+
+    // Detectar login requerido / captcha
+    const loginLocator = page.locator(joinSelectors("login")).first();
+    try {
+      if ((await loginLocator.count()) > 0 && (await loginLocator.isVisible({ timeout: 2000 }).catch(() => false))) {
+        throw new Error("QWEN_LOGIN_REQUIRED: Inicia sesión con GitHub en chat.qwen.ai (ejecuta setup-qwen-profile con --headful o usa el botón de login)");
+      }
+    } catch (err) {
+      if (String(err).includes("QWEN_LOGIN_REQUIRED")) throw err;
+    }
+
+    const captchaLocator = page.locator(joinSelectors("captcha")).first();
+    try {
+      if ((await captchaLocator.count()) > 0 && (await captchaLocator.isVisible({ timeout: 2000 }).catch(() => false))) {
+        throw new Error("QWEN_CAPTCHA: Cloudflare/captcha detectado — espera y reintenta");
+      }
+    } catch (err) {
+      if (String(err).includes("QWEN_CAPTCHA")) throw err;
+    }
+
+    // Seleccionar modelo
+    await trySelectModel(page, modelLabel, 10_000);
+
+    // Encontrar textarea
+    const textarea = await findTextarea(page);
+    if (!textarea) {
+      try {
+        await page.screenshot({ path: path.join(process.cwd(), "qwen-debug.png"), fullPage: true }).catch(() => {});
+      } catch {}
+      throw new Error("QWEN_TEXTAREA_NOT_FOUND: No se encontró textarea en chat.qwen.ai — selectores desactualizados");
+    }
+
+    // Inyectar prompt
+    await textarea.click({ timeout: 5_000 }).catch(() => {});
+    await textarea.fill(objective, { timeout: 10_000 }).catch(async () => {
+      await textarea.focus();
+      await page.keyboard.press("Control+A");
+      await page.keyboard.type(objective, { delay: 10 });
+    });
+
+    // Enviar con Enter
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(600);
+
+    // Loop de polling de streaming
+    const start = Date.now();
+    let prevText = "";
+    const assistantLoc = page.locator(joinSelectors("assistant"));
     const stopLocator = page.locator(joinSelectors("stop"));
-    // Poll hasta que stop no esté visible o timeout
+    const regenLocator = page.locator(joinSelectors("regenerate"));
+
+    let stableCount = 0;
+
     while (Date.now() - start < timeoutMs) {
-      const stopCount = await stopLocator.count().catch(() => 0);
-      let stopVisible = false;
-      if (stopCount > 0) {
+      await page.waitForTimeout(350);
+
+      const count = await assistantLoc.count().catch(() => 0);
+      let currentText = "";
+      if (count > 0) {
+        const lastMsg = assistantLoc.last();
         try {
-          stopVisible = await stopLocator.first().isVisible({ timeout: 500 }).catch(() => false);
+          currentText = (await lastMsg.innerText({ timeout: 1000 })).trim();
         } catch {
-          stopVisible = false;
+          currentText = (await lastMsg.textContent().catch(() => ""))?.trim() || "";
         }
       }
 
-      if (!stopVisible) {
-        // Verificar que Regenerate apareció o que el último mensaje no crece
-        const regen = page.locator(joinSelectors("regenerate")).first();
-        const regenVisible = await regen.isVisible().catch(() => false).then((v) => v).catch(() => false);
-        if (regenVisible) return;
-
-        // Fallback: esperar 2s y verificar que el contenido del asistente no cambia
-        const assistant = page.locator(joinSelectors("assistant")).last();
-        try {
-          const before = await assistant.innerText().catch(() => "");
-          await page.waitForTimeout(1500);
-          const after = await assistant.innerText().catch(() => "");
-          if (before === after && before.length > 0) return;
-        } catch {}
-
-        // Si no hay Regenerate pero tampoco Stop, asumir fin tras 2s sin cambios
-        await page.waitForTimeout(1000);
-        return;
+      if (currentText.length > prevText.length) {
+        const delta = currentText.slice(prevText.length);
+        onChunk(delta);
+        prevText = currentText;
+        stableCount = 0;
+      } else if (currentText.length > 0 && currentText === prevText) {
+        stableCount++;
       }
 
-      await page.waitForTimeout(800);
-    }
-  } catch (err) {
-    console.warn("[qwen] waitForStreamingEnd error:", String(err).slice(0, 200));
-  }
+      // Comprobar estado de finalización
+      const stopVisible = (await stopLocator.count().catch(() => 0)) > 0
+        ? await stopLocator.first().isVisible({ timeout: 300 }).catch(() => false)
+        : false;
 
-  // Fallback: esperar timeout restante y verificar que haya contenido
-  await page.waitForTimeout(Math.min(2000, Math.max(0, timeoutMs - (Date.now() - start))));
+      if (!stopVisible && prevText.length > 0) {
+        const regenVisible = (await regenLocator.count().catch(() => 0)) > 0
+          ? await regenLocator.first().isVisible({ timeout: 300 }).catch(() => false)
+          : false;
+
+        if (regenVisible || stableCount >= 4) {
+          break;
+        }
+      }
+    }
+
+    if (!prevText) {
+      throw new Error("QWEN_NO_RESPONSE: No se recibió respuesta de Qwen tras esperar streaming");
+    }
+
+    if (prevText.length > maxChars) {
+      prevText = prevText.slice(0, maxChars - 3) + "...";
+    }
+
+    return prevText;
+  });
 }
 
 /**
- * Consulta a Qwen Chat y retorna el texto del último mensaje del asistente.
- * Usa PersistentContext con sesión ya iniciada (GitHub) en userDataDir.
+ * Consulta síncrona a Qwen Chat (compatibilidad).
  */
 export async function consultArchitectChat(
   objective: string,
   opts: QwenChatOptions = {},
 ): Promise<string> {
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT;
-  const modelLabel = opts.modelLabel ?? DEFAULT_MODEL_LABEL;
-  const { page } = await getQwenContext(opts);
-
-  // Navegar a chat.qwen.ai si no estamos allí
-  const url = page.url();
-  if (!url.includes("chat.qwen.ai")) {
-    await page.goto("https://chat.qwen.ai", { waitUntil: "domcontentloaded", timeout: 30_000 });
-  } else {
-    // Si ya estamos, asegurar que la página esté lista
-    await page.waitForLoadState("domcontentloaded").catch(() => {});
-  }
-
-  // Detectar login requerido / captcha
-  const loginLocator = page.locator(joinSelectors("login")).first();
-  try {
-    if ((await loginLocator.count()) > 0 && (await loginLocator.isVisible({ timeout: 2000 }).catch(() => false))) {
-      throw new Error("QWEN_LOGIN_REQUIRED: Inicia sesión con GitHub en chat.qwen.ai (ejecuta setup-qwen-profile con --headful)");
-    }
-  } catch (err) {
-    if (String(err).includes("QWEN_LOGIN_REQUIRED")) throw err;
-  }
-
-  const captchaLocator = page.locator(joinSelectors("captcha")).first();
-  try {
-    if ((await captchaLocator.count()) > 0 && (await captchaLocator.isVisible({ timeout: 2000 }).catch(() => false))) {
-      throw new Error("QWEN_CAPTCHA: Cloudflare/captcha detectado — espera y reintenta");
-    }
-  } catch (err) {
-    if (String(err).includes("QWEN_CAPTCHA")) throw err;
-  }
-
-  // Seleccionar modelo QwenMax-3.8
-  await trySelectModel(page, modelLabel, 10_000);
-
-  // Encontrar textarea
-  const textarea = await findTextarea(page);
-  if (!textarea) {
-    // Debug: guardar screenshot y html para diagnosticar
-    try {
-      await page.screenshot({ path: path.join(process.cwd(), "qwen-debug.png"), fullPage: true }).catch(() => {});
-      const html = await page.content().catch(() => "");
-      console.error("[qwen] textarea no encontrada. HTML head:", html.slice(0, 2000));
-    } catch {}
-    throw new Error("QWEN_TEXTAREA_NOT_FOUND: No se encontró textarea en chat.qwen.ai — selectores desactualizados");
-  }
-
-  // Contar mensajes asistente antes de enviar (para identificar el nuevo)
-  const prevCount = await page.locator(joinSelectors("assistant")).count().catch(() => 0);
-
-  // Inyectar prompt
-  await textarea.click({ timeout: 5_000 }).catch(() => {});
-  await textarea.fill(objective, { timeout: 10_000 }).catch(async () => {
-    // Fallback: contenteditable
-    await textarea.focus();
-    await page.keyboard.press("Control+A");
-    await page.keyboard.type(objective, { delay: 10 });
-  });
-
-  // Enviar con Enter
-  await page.keyboard.press("Enter");
-  // Algunos UIs requieren click en botón enviar si Enter no funciona
-  await page.waitForTimeout(800);
-
-  // Esperar fin de streaming
-  await waitForStreamingEnd(page, timeoutMs);
-
-  // Extraer último mensaje asistente
-  const assistantLoc = page.locator(joinSelectors("assistant"));
-  const count = await assistantLoc.count().catch(() => 0);
-  if (count === 0) {
-    throw new Error("QWEN_NO_RESPONSE: No se encontró mensaje del asistente tras esperar streaming");
-  }
-
-  // Si hay mensajes nuevos, tomar el último; si no, tomar el último existente
-  const targetIdx = count - 1;
-  const last = assistantLoc.nth(targetIdx);
-  let text = "";
-  try {
-    text = await last.innerText({ timeout: 10_000 });
-  } catch {
-    text = await last.textContent().then((t) => t || "").catch(() => "");
-  }
-
-  text = text.trim();
-  if (!text) {
-    throw new Error("QWEN_EMPTY_RESPONSE: Mensaje del asistente vacío");
-  }
-
-  // Verificar que no es el mismo mensaje anterior (si había)
-  if (prevCount > 0 && count === prevCount) {
-    console.warn("[qwen] count no aumentó tras prompt — puede ser respuesta cacheada o error");
-  }
-
-  if (text.length > 4000) text = text.slice(0, 3997) + "...";
-
-  return text;
+  return consultArchitectChatStream(objective, () => {}, opts);
 }
 
 /**

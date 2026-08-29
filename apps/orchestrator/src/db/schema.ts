@@ -142,6 +142,50 @@ export const embeddings = pgTable(
   ],
 );
 
+// ---------------------------------------------------------------------------
+// qwen_conversations — chat persistente (FASE 6b, escalable, Obsidian-ready)
+// ---------------------------------------------------------------------------
+export const qwenConversations = pgTable(
+  "qwen_conversations",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    title: varchar("title", { length: 120 }).notNull(),
+    modelLabel: varchar("model_label", { length: 40 }).notNull().default("QwenMax-3.8"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("qwen_conversations_updated_idx").on(t.updatedAt)],
+);
+
+export const qwenMessages = pgTable(
+  "qwen_messages",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    conversationId: varchar("conversation_id", { length: 36 })
+      .notNull()
+      .references(() => qwenConversations.id, { onDelete: "cascade" }),
+    role: varchar("role", { length: 20 }).notNull(), // user | assistant | system
+    content: text("content").notNull(),
+    modelLabel: varchar("model_label", { length: 40 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("qwen_messages_conv_idx").on(t.conversationId, t.createdAt)],
+);
+
+export const qwenMemory = pgTable(
+  "qwen_memory",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    conversationId: varchar("conversation_id", { length: 36 })
+      .notNull()
+      .references(() => qwenConversations.id, { onDelete: "cascade" }),
+    summary: text("summary").notNull(),
+    embedding: vector("embedding", { dimensions: 1536 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("qwen_memory_conv_idx").on(t.conversationId)],
+);
+
 // Tipos inferidos
 export type MissionRow = typeof missions.$inferSelect;
 export type NewMissionRow = typeof missions.$inferInsert;
@@ -149,3 +193,5 @@ export type MissionReportRow = typeof missionReports.$inferSelect;
 export type DecisionRow = typeof decisions.$inferSelect;
 export type WorktreeRow = typeof worktrees.$inferSelect;
 export type EmbeddingRow = typeof embeddings.$inferSelect;
+export type QwenConversationRow = typeof qwenConversations.$inferSelect;
+export type QwenMessageRow = typeof qwenMessages.$inferSelect;
